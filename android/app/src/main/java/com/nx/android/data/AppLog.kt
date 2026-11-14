@@ -35,6 +35,9 @@ object AppLog {
         }
     }
 
+    /** The log file itself: the bundle takes it as it is */
+    fun logFile(): File? = file
+
     /** The log's text (the tail, for sharing) */
     fun text(maxLines: Int = 400): String {
         val f = file ?: return ""

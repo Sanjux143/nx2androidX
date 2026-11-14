@@ -7,7 +7,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 os.environ['NX2A_HOME'] = tempfile.mkdtemp(prefix='nx2a_test_home_')
 
-from porter import config, datapack, pipeline, profiles   # noqa: E402
+from porter import config, datapack, dumps, pipeline, profiles   # noqa: E402
 from porter.upstream import android_profile, game          # noqa: E402
 
 # The pipeline's messages hold "→" (mem_profile's alias region line): stdout as porter.cli.main sets it, or the Windows release runner's cp1252 pipe fails the test
@@ -958,6 +958,70 @@ class UnrealShaders(unittest.TestCase):
         p = self.port([[(b'one', 6), (b'two', 4)]], {b'one': b'123456', b'two': b'5678'}, root=p.root)   # the run again, the decoder gets both
         pipeline.Port.device_ue(p)
         self.assertEqual(p.asked, [[b'two']])   # the stream on disk is not asked for again
+
+
+class SubfolderScan(unittest.TestCase):   # the updates and the DLC in a subfolder next to the base game (a download's layout: 本体加补丁/1DLC/)
+    BASE = 0x0100B8A026F14000
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp(prefix='nx2a_test_subfolder_')
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.root = Path(tmp)
+
+    def dump(self, name, tid):
+        """an NSP whose ticket names the title ID"""
+        files = [(f'{tid:016x}0000000000000000.tik', bytes(16))]
+        names = b''.join(n.encode() + b'\0' for n, _ in files)
+        table, offset, string = b'', 0, 0
+        for n, data in files:
+            table += struct.pack('<QQII32sQ', offset, len(data), string, 0, bytes(32), 0)
+            offset += len(data)
+            string += len(n) + 1
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(dumps._pfs0_header([n for n, _ in files], [len(d) for _, d in files]) + b''.join(d for _, d in files))
+        return path
+
+    def test_the_dlc_in_a_subfolder_is_taken(self):
+        base = self.dump('Game [v0].nsp', self.BASE)
+        dlc = self.dump('1DLC/DLC [v0].nsp', self.BASE + 0x1002)
+        app, fam = pipeline.nsp.scan_nsps(self.root, ('nsp',), None, base)
+        self.assertEqual(app, self.BASE)
+        self.assertEqual(fam['base'], base)
+        self.assertEqual(fam['dlc'], [(self.BASE + 0x1002, 0, dlc)])
+
+    def test_the_update_in_a_subfolder_is_taken(self):
+        base = self.dump('Game [v0].nsp', self.BASE)
+        update = self.dump('patch/Update [v262144].nsp', self.BASE + 0x800)
+        app, fam = pipeline.nsp.scan_nsps(self.root, ('nsp',), None, base)
+        self.assertEqual(app, self.BASE)
+        self.assertEqual(fam['updates'], [(262144, update)])
+
+    def test_another_game_in_a_subfolder_is_left_out(self):
+        base = self.dump('Game [v0].nsp', self.BASE)
+        self.dump('other/Other [v0].nsp', 0x0100AAAA026F14000)
+        app, fam = pipeline.nsp.scan_nsps(self.root, ('nsp',), None, base)
+        self.assertEqual(app, self.BASE)
+        self.assertEqual(fam['dlc'], [])
+        self.assertEqual(fam['updates'], [])
+
+    def test_the_files_beside_the_base_are_taken_as_before(self):
+        base = self.dump('Game [v0].nsp', self.BASE)
+        update = self.dump('Update [v262144].nsp', self.BASE + 0x800)
+        dlc = self.dump('DLC [v0].nsp', self.BASE + 0x1002)
+        app, fam = pipeline.nsp.scan_nsps(self.root, ('nsp',), None, base)
+        self.assertEqual(app, self.BASE)
+        self.assertEqual(fam['updates'], [(262144, update)])
+        self.assertEqual(fam['dlc'], [(self.BASE + 0x1002, 0, dlc)])
+
+    def test_the_report_says_where_each_file_was_found(self):
+        base = self.dump('Game [v0].nsp', self.BASE)
+        self.dump('Update [v262144].nsp', self.BASE + 0x800)
+        self.dump('1DLC/DLC [v0].nsp', self.BASE + 0x1002)
+        info = pipeline.inspect(base, keys='')
+        self.assertEqual([u['folder'] for u in info['updates']], [''])       # next to the base game
+        self.assertEqual([d['folder'] for d in info['dlc']], ['1DLC'])        # in the subfolder
+        self.assertEqual([d['file'] for d in info['dlc']], ['DLC [v0].nsp'])
 
 
 if __name__ == '__main__':

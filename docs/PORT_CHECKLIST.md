@@ -8,7 +8,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 **Credit.** A ported game names the person who brought it up (`ported by @handle`), taken from the commit that added its profile. The ports from before this was written down are credited to the author of the commit that introduced them.
 
-**27 / 94 ported**
+**37 / 104 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000` · ported by @shirai91
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -39,6 +39,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
 - [ ] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · profile here · 60 fps with 1.0.4
 - [x] FINAL FANTASY RESONANCE · `0100606026F12000`
+- [x] FINAL FANTASY RESONANCE (Asian release) · `0100B8A026F14000` · ported by @zFitness
 - [ ] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
 - [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
 - [ ] Fire Emblem Engage · `0100A6301214E000` · profile here · 60 fps with 2.0.0

@@ -43,8 +43,9 @@ The library got simpler too: it used to take a folder to be the library, and the
 | **The game is a page of the app** | Ending the game falls back to the library instead of the home screen, and the recents hold one entry |
 | **The app's own language** | Chinese and English, switchable at any time (the game's own language stays in the library's drawer, one game at a time) |
 | **Saves you can share** | An export becomes a package handed to the system share sheet; an import takes one in from anywhere; the save it replaces is backed up first |
-| **An in-game drawer** | The ☰ menu button opens it: frame generation and display & controls in the pause menu |
+| **An in-game drawer** | The ☰ menu button opens it: performance, HUD, frame generation and controls in the pause menu |
 | **Frame generation** | Available while the game runs; the multiplier and the target frame rate take effect at once |
+| **A steady frame rate** | The drawer's performance page holds the frame rate step (60, 40 or 30 instead of a rate that wanders) and the docked mode |
 | **Vulkan driver management** | Download (Turnip builds), import from a file or remove, in the Settings tab; one Turnip build ships inside the app |
 | **Update check on start** | The release page is checked quietly; a newer version says so on the home page, and the Settings tab can check again on demand |
 | **Shareable logs** | The library's drawer shares the game's runtime log; the Settings tab clears it |
@@ -62,11 +63,15 @@ An import is not taken on trust: a package carrying another game's title ID is r
 
 ### The in-game drawer and frame generation
 
-The ☰ menu button opens the in-game drawer, with two tabs: **frame generation** and **display & controls**.
+The ☰ menu button opens the in-game drawer, with four tabs: **performance**, **HUD**, **frame generation** and **controls**.
+
+The performance tab holds the two trade-offs: the **frame rate step** — *follow the game* leaves the rate to step between 60, 40 and 30 fps on its own, while 60, 40 or 30 hold that step, so the rate stays steady where the device can hold it (the pick is kept per game and takes effect at once) — and the **docked mode**, which renders at the TV's resolution: a sharper picture that costs more power, and a higher frame rate without it.
 
 Frame generation uses Lossless.dll: the frames-per-game multiplier, the target frame rate and the optical flow quality are all adjustable, and the switch and the multiplier take effect at once; an updated DLL is copied to the private folder by itself. Lossless Scaling's resources are neither bundled nor downloaded, and the DLL is the player's own file: we do not distribute it and do not link to a download.
 
-The display & controls tab has the virtual gamepad: the layout editor (drag a control, pinch to resize, snap to grid), the pad's opacity, rumble, the frame rate counter and the docked mode.
+The HUD tab has the on-screen information: the performance line (the frame rate counter), the device line, the fields the line shows and the temperature's unit.
+
+The controls tab has the virtual gamepad: the layout editor (drag a control, pinch to resize, snap to grid), the pad's opacity and the rumble.
 
 ### Vulkan drivers on the phone
 

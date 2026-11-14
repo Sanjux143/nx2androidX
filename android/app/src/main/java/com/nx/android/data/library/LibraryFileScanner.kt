@@ -1,6 +1,7 @@
 package com.nx.android.data.library
 
 import com.nx.android.domain.GameIdentity
+import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.Ported
 import java.io.File
 
@@ -60,8 +61,8 @@ object LibraryFileScanner {
             if (!d.isDirectory || !d.name.endsWith("-data")) continue
             portFromPack(d)?.let {
                 val id = it.titleId.uppercase()
-                val current = out[id]
-                if (current == null || (!current.runnable && it.runnable)) out[id] = it
+                val chosen = LibraryLogic.preferPack(out[id], currentInternal = true, it, candidateInternal = true)
+                out[id] = chosen.first
             }
         }
         return out

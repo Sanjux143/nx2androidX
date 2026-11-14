@@ -170,6 +170,7 @@ uint64_t dm_present_period_adapt(uint64_t period) {
 // to 30 fps would be counted as one refresh short and the generation would ask for more frames than the panel can show)
 int dm_perf_rate_fps(void) { return (int)(1000000000ll / STEPS[g_step]); }
 static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that step (60, 40 or 30; anything else lets the rate adapt again): tests
+    // The player's own pick comes the same way: the drawer's frame rate step (jni_android.c's perfPinSet) sets the variable while the game runs.
     static unsigned k; static int pin = -1; if (k++ % 30) return pin;
     const char *e = getenv("DM_FPS_PIN"); int v = e ? atoi(e) : 0, st = v == 60 ? 0 : v == 40 ? 1 : v == 30 ? 2 : -1;
     if (st != pin) { pin = st; LOG("[perf] adaptive frame rate %s", st < 0 ? "free again" : "pinned"); }

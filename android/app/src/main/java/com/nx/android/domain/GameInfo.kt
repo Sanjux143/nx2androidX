@@ -17,10 +17,22 @@ data class GameInfo(
     /** The porter's own word: the game has no profile for Android, so the port has to be an experimental one. */
     val experimental: Boolean = false,
     val reason: String = "",
-    val updateCount: Int = 0,
-    val dlcCount: Int = 0,
+    /** The base game's file name */
+    val base: String = "",
+    /** The updates next to the base game */
+    val updates: List<GameFile> = emptyList(),
+    /** The DLC next to the base game */
+    val dlc: List<GameFile> = emptyList(),
     /** The version this port would pack (empty when the porter has none to pack). */
     val packVersion: String = "",
+)
+
+/** One file the porter found: its name, its version and the subfolder it was found in. */
+data class GameFile(
+    val version: String = "",
+    val name: String = "",
+    /** The subfolder it was found in ('' when it sits next to the picked file) */
+    val folder: String = "",
 )
 
 /** How far the porter's profile for a game goes. */
@@ -104,10 +116,20 @@ object GameInfoJson {
             supported = json.optBoolean("supported"),
             experimental = json.optBoolean("experimental"),
             reason = json.text("reason"),
-            updateCount = json.optJSONArray("updates")?.length() ?: 0,
-            dlcCount = json.optJSONArray("dlc")?.length() ?: 0,
+            base = json.text("base"),
+            updates = json.files("updates"),
+            dlc = json.files("dlc"),
             packVersion = json.text("pack"),
         )
+    }
+
+    /** The files of one array of the report: each with its name, its version and the subfolder it was found in. */
+    private fun JSONObject.files(name: String): List<GameFile> {
+        val array = optJSONArray(name) ?: return emptyList()
+        return (0 until array.length()).mapNotNull { i ->
+            val o = array.optJSONObject(i) ?: return@mapNotNull null
+            GameFile(version = o.text("version"), name = o.text("file"), folder = o.text("folder"))
+        }
     }
 
     /** A field as text: a missing one and a null one are both empty (the porter writes null for "no pack"). */

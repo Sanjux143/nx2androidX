@@ -185,8 +185,12 @@ def inspect(folder, keys=None):
     app, fam = nsp.scan_nsps(p, dumps.EXTS, keys or config.load().get('keys'), base)
     g, ap = profiles.by_title(app)
     files = [fam['base'], *(p for _, p in fam['updates']), *(p for _, _, p in fam['dlc'])]
-    info = dict(title_id=f'{app:016X}', base=fam['base'].name, updates=[{'version': f'v{v}' if v is not None else None, 'file': p.name} for v, p in fam['updates']],
-                dlc=[{'title_id': f'{t:016X}', 'file': p.name} for t, _, p in fam['dlc']], profile=None, android=None, versions=[], pack=None, supported=False, reason='',
+
+    def where(f):   # the subfolder it was found in ('' when it sits next to the picked file): the GUI's card and the app say where each file came from
+        return f.parent.name if f.parent != p else ''
+
+    info = dict(title_id=f'{app:016X}', base=fam['base'].name, updates=[{'version': f'v{v}' if v is not None else None, 'file': f.name, 'folder': where(f)} for v, f in fam['updates']],
+                dlc=[{'title_id': f'{t:016X}', 'version': f'v{v}' if v is not None else None, 'file': f.name, 'folder': where(f)} for t, v, f in fam['dlc']], profile=None, android=None, versions=[], pack=None, supported=False, reason='',
                 compressed=[p.name for p in files if dumps.compressed(p)])   # NSZ / XCZ: decompressed during the port into the build folder's tmp/, deleted once extracted
     info['experimental'] = not (g and ap)   # a port can still be tried: porter port --experimental
     if not g:

@@ -18,13 +18,16 @@ class GameInfoTest {
               "updates": [
                 {
                   "version": "v1.4.0",
-                  "file": "TOTK update.nsp"
+                  "file": "TOTK update.nsp",
+                  "folder": ""
                 }
               ],
               "dlc": [
                 {
                   "title_id": "0100F2C0115B6001",
-                  "file": "DLC.nsp"
+                  "version": null,
+                  "file": "DLC.nsp",
+                  "folder": "1DLC"
                 }
               ],
               "profile": "0100F2C0115B6000",
@@ -54,8 +57,15 @@ class GameInfoTest {
         assertEquals(GameProfileStatus.PLAYABLE, info.status)
         assertTrue(info.supported)
         assertFalse(info.experimental)
-        assertEquals(1, info.updateCount)
-        assertEquals(1, info.dlcCount)
+        assertEquals("TOTK.nsp", info.base)
+        assertEquals(1, info.updates.size)
+        assertEquals("TOTK update.nsp", info.updates[0].name)
+        assertEquals("v1.4.0", info.updates[0].version)
+        assertEquals("", info.updates[0].folder)
+        assertEquals(1, info.dlc.size)
+        assertEquals("DLC.nsp", info.dlc[0].name)
+        assertEquals("", info.dlc[0].version)
+        assertEquals("1DLC", info.dlc[0].folder)
         assertEquals("1.4.0", info.packVersion)
     }
 
@@ -70,7 +80,8 @@ class GameInfoTest {
         assertTrue(info.experimental)
         assertFalse(info.supported)
         assertEquals("", info.packVersion)
-        assertEquals(0, info.updateCount)
+        assertEquals(0, info.updates.size)
+        assertEquals(0, info.dlc.size)
     }
 
     @Test
@@ -104,8 +115,8 @@ class GameInfoTest {
         assertEquals("0100CCCC00000000", info.titleId)
         assertEquals("", info.name)
         assertEquals(GameProfileStatus.UNSUPPORTED, info.status)
-        assertEquals(0, info.updateCount)
-        assertEquals(0, info.dlcCount)
+        assertEquals(0, info.updates.size)
+        assertEquals(0, info.dlc.size)
         assertEquals("", info.packVersion)
         assertFalse(info.experimental)
     }

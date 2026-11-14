@@ -25,6 +25,15 @@ object Native {
     @JvmStatic external fun frameGenSet(on: Boolean, mult: Int, target: Int, flow: Int)
     @JvmStatic external fun frameGenStatus(): String
 
+    /**
+     * 运行中抽屉的帧率档位：0 跟随游戏（自适应自由升降），60/40/30 钉住那一档。
+     * 宿主那边是 perf_android.c 的 fps_pin，它每 30 帧重读一次环境变量，所以即时生效。
+     */
+    @JvmStatic external fun perfPinSet(fps: Int)
+
+    /** 宿主现在的档位（它读 DM_FPS_PIN；0 = 自由自适应） */
+    @JvmStatic external fun perfPinGet(): Int
+
     /** 运行中抽屉的宿主菜单行（画面与操作/存档）：what 0 overlay 1 opacity 2 rumble 4 docked */
     @JvmStatic external fun menuGet(what: Int): Int
     @JvmStatic external fun menuSet(what: Int, v: Double)

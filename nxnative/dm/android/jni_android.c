@@ -259,3 +259,23 @@ Java_com_nx_android_game_Native_frameGenStatus(JNIEnv *E, jclass c) {
     char out[300]; snprintf(out, sizeof out, "%d %s", st, buf);
     return (*E)->NewStringUTF(E, out);
 }
+
+// The drawer's frame rate step: the adaptive rate (perf_android.c) steps 60 -> 40 -> 30 on its own, and DM_FPS_PIN holds one of those steps.
+// fps_pin reads the variable again every 30 frames, so setting it here takes effect at once. 0 = free again (the rate adapts), 60/40/30 = hold that step.
+// The app calls this after the game starts: the pack's env.txt is read while the host boots, and the later setenv is the one that stays.
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_perfPinSet(JNIEnv *E, jclass c, jint fps) {
+    (void)E; (void)c;
+    char v[8];
+    snprintf(v, sizeof v, "%d", (int)fps);
+    setenv("DM_FPS_PIN", v, 1);
+}
+
+// The step in force now: what fps_pin holds (the pack's env.txt or the player's own pick). 0 = the rate adapts on its own.
+JNIEXPORT jint JNICALL
+Java_com_nx_android_game_Native_perfPinGet(JNIEnv *E, jclass c) {
+    (void)E; (void)c;
+    const char *e = getenv("DM_FPS_PIN");
+    int v = e ? atoi(e) : 0;
+    return v == 60 || v == 40 || v == 30 ? v : 0;   // any other value lets the rate adapt again (fps_pin's rule)
+}

@@ -37,10 +37,21 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     companion object {
         const val KEY_SHOWN = "pad.shown"
         const val KEY_OPACITY = "pad.opacity"
+        /** 默认主题包（ergo）在 app 自己的 assets 里：移植器把整棵 nxnative 树打进了 APK */
+        const val DEFAULT_THEME_DIR = "tool/nxnative/dm/android/themes/ergo"
+        private const val TAG = "nx2a.pad"
         private val LABELS = mapOf("plus" to "+", "minus" to "−")
         private const val TAP_MS = 14      // 按下那一下的时长（照旧宿主 haptics_android.c 的 vib_tap）
         private const val TAP_AMP = 140    // 它的振幅（1..255）
     }
+
+    /** 主题从哪来：自带读数据包的 overlay/，默认读 app 里的默认主题包 */
+    private class ThemeSource(
+        /** 主题表（theme.tsv）的文本 */
+        val text: () -> String?,
+        /** 图册（atlas）的位图 */
+        val atlas: (String) -> Bitmap?,
+    )
 
     /** 一个贴图：图册里的位置与大小、相对控件中心的偏移（设计用的 CSS px） */
     private class Sp(
@@ -69,6 +80,15 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
 
     /** 「显示手柄」每个游戏一份（键 pad.shown.<title id>） */
     private val shownKey = if (titleId.isNullOrEmpty()) KEY_SHOWN else "$KEY_SHOWN.$titleId"
+
+    /** 手柄的设置：自己一份文件（只有游戏页这个进程写，见 PadPrefs） */
+    private val padPrefs = PadPrefs(context)
+
+    /** 「按键风格」也是每个游戏一份（键 pad.style.<title id>） */
+    private val styleKey = PadStyle.key(titleId)
+
+    /** 当前风格：自带（主题贴图）或透明（简化的半透明形状）。它只改绘制，不动输入 */
+    private var styleState: PadStyle = PadStyle.PACK
 
     /** 布局（宿主给的）与路由（App 自己的） */
     var layout: PadLayout = PadLayout()
@@ -112,19 +132,41 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     private val dstRect = RectF()
 
     var shown: Boolean
-        get() = prefs.bool(shownKey, true)
-        set(v) { prefs.put(shownKey, v); pushPrefs(); answerControls(); invalidate() }
+        get() = padPrefs.bool(shownKey, true)
+        set(v) { padPrefs.put(shownKey, v); pushPrefs(); answerControls(); invalidate() }
     var opacity: Int
-        get() = prefs.str(KEY_OPACITY).toIntOrNull() ?: 60
-        set(v) { prefs.put(KEY_OPACITY, v.coerceIn(10, 100).toString()); pushPrefs(); invalidate() }
+        get() = padPrefs.str(KEY_OPACITY).toIntOrNull() ?: 60
+        set(v) { padPrefs.put(KEY_OPACITY, v.coerceIn(10, 100).toString()); pushPrefs(); invalidate() }
+
+    /**
+     * 按键风格：自带（数据包的主题贴图）或默认（app 里的默认主题包）。
+     * 换个风格只动绘制的主题状态——路由器的按键状态不碰（不会出现「幽灵按键」）。
+     */
+    var style: PadStyle
+        get() = styleState
+        set(v) {
+            if (v == styleState) return
+            styleState = v
+            padPrefs.put(styleKey, v.key)
+            applyStyle()
+        }
 
     init {
-        // 玩家还没表过态时，把数据包的默认记下来：--touch 的数据包写着 overlay=0（手柄先藏着），
-        // 而宿主会重写 settings.txt（那两项不再由它保存），所以第一次见到就由 App 收下
-        if (!prefs.prefs.contains(shownKey)) {
-            val legacy = prefs.prefs.contains(KEY_SHOWN)
-            prefs.put(shownKey, if (legacy) prefs.bool(KEY_SHOWN, true) else packSaysHidden())
+        // 迁移：旧版本把手柄的设置写在 nx2a 里（那文件主进程也在写，会互相覆盖），
+        // 第一次见到这个游戏时把它们搬进手柄自己的文件。
+        // --touch 的数据包写着 overlay=0（手柄先藏着），而宿主会重写 settings.txt
+        // （那两项不再由它保存），所以第一次见到就由 App 收下
+        if (!padPrefs.contains(shownKey)) {
+            val old = prefs.prefs
+            padPrefs.put(shownKey, when {
+                old.contains(shownKey) -> old.getBoolean(shownKey, true)
+                old.contains(KEY_SHOWN) -> old.getBoolean(KEY_SHOWN, true)   // 旧版的全局开关
+                else -> packSaysHidden()
+            })
         }
+        if (!padPrefs.contains(KEY_OPACITY)) padPrefs.put(KEY_OPACITY, prefs.str(KEY_OPACITY, "60"))
+        // 风格：玩家上次选的那套（没选过或认不出来就是自带）
+        styleState = PadStyle.of(padPrefs.str(styleKey))
     }
 
     /** 数据包的第一份设置里写着 overlay=0 吗（--touch 的游戏：手柄先藏着） */
@@ -399,10 +441,49 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
 
     // ---- 主题：数据包的 overlay/theme.tsv + 图册（与宿主主题同源数据）----
 
+    /** 换风格：只动绘制的主题状态，输入状态不碰 */
+    private fun applyStyle() {
+        loadTheme()
+        invalidate()
+    }
+
+    /** 丢掉主题：没有主题可读时绘制走矢量退路 */
+    private fun clearTheme() {
+        atlas = null
+        themeReady = false
+        themeAlpha = 1f
+        themeByCtl.clear()
+        buildCtlIndex()
+    }
+
+    /** 当前风格的主题从哪来：自带 = 数据包的 overlay/，默认 = app 里的默认主题包 */
+    private fun themeSource(): ThemeSource? = when (styleState) {
+        PadStyle.PACK -> pack?.let { p ->
+            ThemeSource(
+                text = { File(p, "overlay/theme.tsv").takeIf { it.isFile }?.readText() },
+                atlas = { name -> BitmapFactory.decodeFile(File(File(p, "overlay"), name).absolutePath) },
+            )
+        }
+        PadStyle.DEFAULT -> ThemeSource(
+            text = {
+                runCatching {
+                    this.context.assets.open("$DEFAULT_THEME_DIR/theme.tsv").use { it.readBytes().toString(Charsets.UTF_8) }
+                }.onFailure { android.util.Log.w(TAG, "the default theme pack is not in the assets ($DEFAULT_THEME_DIR): $it") }.getOrNull()
+            },
+            atlas = { name ->
+                runCatching {
+                    this.context.assets.open("$DEFAULT_THEME_DIR/$name").use { BitmapFactory.decodeStream(it) }
+                }.onFailure { android.util.Log.w(TAG, "the default theme pack has no $name: $it") }.getOrNull()
+            },
+        )
+    }
+
+    /** 读主题：自带读数据包自带的 overlay/，默认读 app 里的默认主题包；都没有就走矢量退路 */
     private fun loadTheme() {
-        val packDir = pack ?: return
+        clearTheme()
+        val src = themeSource() ?: return
         runCatching {
-            val tsv = File(packDir, "overlay/theme.tsv").readText()
+            val tsv = src.text() ?: return@runCatching
             var atlasName: String? = null
             val groups = HashMap<String, CtlSp>()
             var dw = 0f; var dh = 0f
@@ -431,8 +512,8 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
                     }
                 }
             }
-            val name = atlasName ?: return
-            val bmp = BitmapFactory.decodeFile(File(File(packDir, "overlay"), name).absolutePath) ?: return
+            val name = atlasName ?: return@runCatching
+            val bmp = src.atlas(name) ?: return@runCatching
             atlas = bmp; designH = dh
             themeByCtl.clear(); themeByCtl.putAll(groups)
             themeReady = groups.isNotEmpty() && dh > 0

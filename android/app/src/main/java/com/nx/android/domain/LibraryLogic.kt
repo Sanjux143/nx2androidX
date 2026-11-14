@@ -58,14 +58,49 @@ object LibraryLogic {
         return entries.values.sortedBy { it.label.lowercase() }
     }
 
-    /** Choose one visible pack for a title while retaining the other packs for cleanup. */
+    /**
+     * Choose one visible pack for a title while retaining the other packs for cleanup.
+     *
+     * 同一个 title ID 可能有两个包（包名取自档案的 ipa 键：游戏先用临时档案构建过，后来换成正式档案，
+     * 包名跟着变了，旧包就留在了那里）。库里只显示一个，比的必须是包本身的好坏，不能看扫到的顺序：
+     * 有宿主的包优先（只有清单的空壳不算移植）→ 能跑的优先 → 档案状态（正式调通的压过临时档案的）→
+     * 新旧 → 手机自己的存储 → 包名。
+     */
     fun preferPack(current: Ported?, currentInternal: Boolean,
-                   candidate: Ported, candidateInternal: Boolean): Pair<Ported, Boolean> = when {
-        current == null -> candidate to candidateInternal
-        candidate.runnable && !current.runnable -> candidate to candidateInternal
-        candidate.runnable == current.runnable && candidateInternal && !currentInternal ->
-            candidate to candidateInternal
-        else -> current to currentInternal
+                   candidate: Ported, candidateInternal: Boolean): Pair<Ported, Boolean> {
+        if (current == null) return candidate to candidateInternal
+        val better = if (candidate.hasHost != current.hasHost) candidate.hasHost
+            else if (candidate.runnable != current.runnable) candidate.runnable
+            else comparePacks(candidate, candidateInternal, current, currentInternal) > 0
+        return if (better) candidate to candidateInternal else current to currentInternal
+    }
+
+    /** 两个包谁更好：档案状态 → 新旧 → 手机自己的存储 → 包名（跨设备、跨扫描都一样） */
+    private fun comparePacks(a: Ported, aInternal: Boolean, b: Ported, bInternal: Boolean): Int {
+        val status = statusRank(a.status) - statusRank(b.status)
+        if (status != 0) return status
+        val made = a.pack.lastModified() - b.pack.lastModified()
+        if (made != 0L) return if (made > 0) 1 else -1
+        if (aInternal != bInternal) return if (aInternal) 1 else -1
+        return a.pack.name.compareTo(b.pack.name)
+    }
+
+    /** 档案状态的高低：正式调通的（playable / wip / boots）压过临时档案（experimental） */
+    fun statusRank(status: String): Int = when (status.lowercase()) {
+        "playable" -> 3
+        "wip" -> 2
+        "boots" -> 1
+        else -> 0
+    }
+
+    /**
+     * 同 title ID 的旧包怎么处理：旧包没有存档就直接删；有存档而新包没有，就把存档搬进新包再删；
+     * 两边都有存档就都不动——玩家的数据不静默销毁。
+     */
+    fun olderPackAction(oldHasSaves: Boolean, newHasSaves: Boolean): OlderPackAction = when {
+        !oldHasSaves -> OlderPackAction.REMOVE
+        newHasSaves -> OlderPackAction.KEEP
+        else -> OlderPackAction.MOVE_SAVES_AND_REMOVE
     }
 
     /**
@@ -110,3 +145,6 @@ object LibraryLogic {
 
 /** 点「运行」的走法：回到前台，还是全新启动 */
 enum class RunAction { RESUME, START }
+
+/** 同 title ID 的旧包的处理办法 */
+enum class OlderPackAction { REMOVE, MOVE_SAVES_AND_REMOVE, KEEP }

@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The paths the save packages are shared from: the download folder's nx2android/ (where the panel writes
-     them) and the app's own external files folder (the fallback when the download folder cannot be written). -->
+     them) and the app's own external files folder (the fallback when the download folder cannot be written).
+     The log bundles (the zips) are shared out of the cache. -->
 <paths>
     <cache-path name="build-logs" path="shared-build-logs/" />
+    <cache-path name="log-bundles" path="shared-logs/" />
     <external-path name="downloads" path="Download/nx2android/" />
     <external-files-path name="external-files" path="nx2android/" />
 </paths>

@@ -29,9 +29,11 @@ import com.nx.android.appstate.PortState
 import com.nx.android.data.AppLocale
 import com.nx.android.data.AppLog
 import com.nx.android.data.AppVersion
+import com.nx.android.data.LogBundle
 import com.nx.android.data.Player
 import com.nx.android.data.PrefsStore
 import com.nx.android.data.porting.BuildSessionRepository
+import com.nx.android.core.storage.AppPaths
 import androidx.core.content.FileProvider
 import com.nx.android.data.library.LibraryFileScanner
 import com.nx.android.domain.GameIdentity
@@ -67,6 +69,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var runtime: com.nx.android.appstate.RuntimeUpdateState
     @Inject lateinit var port: PortState
     @Inject lateinit var buildSessions: BuildSessionRepository
+    @Inject lateinit var paths: AppPaths
     @Inject lateinit var onboarding: OnboardingState
     @Inject lateinit var environmentSetup: com.nx.android.domain.environment.EnvironmentSetup
     @Inject lateinit var drivers: com.nx.android.domain.drivers.DriverRepository
@@ -178,12 +181,11 @@ class MainActivity : ComponentActivity() {
         version = { versionName() },
         keys = { prefs.keys },
         onShareLog = {
-            val text = AppLog.text()
-            if (text.isNotEmpty()) {
-                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_TEXT, text), locale.str(R.string.main_share_log)))
-            } else {
-                toast(locale.str(R.string.main_log_empty))
+            lifecycleScope.launch {
+                val zip = withContext(Dispatchers.IO) {
+                    LogBundle.build(this@MainActivity, paths.work, buildSessions.logFiles(), bundleDir())
+                }
+                shareBundle(zip, R.string.main_share_log, R.string.main_log_empty)
             }
         },
         onClearLog = {
@@ -198,20 +200,14 @@ class MainActivity : ComponentActivity() {
                     session == null || !session.logAvailable -> toast(locale.str(R.string.builds_log_unavailable))
                     buildSessions.logLength(id) == 0L -> toast(locale.str(R.string.builds_log_empty))
                     else -> {
-                        val safeName = File(session.game).nameWithoutExtension.replace(Regex("[^A-Za-z0-9_-]"), "_")
-                        val shareDir = File(cacheDir, "shared-build-logs")
-                        val snapshot = File(shareDir, "$safeName-${id.take(8)}.txt")
-                        val copied = withContext(Dispatchers.IO) {
-                            shareDir.listFiles()?.filter { it.isFile && it.lastModified() < System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 }
-                                ?.forEach { it.delete() }
-                            buildSessions.copyLogSnapshot(id, snapshot)
+                        val safeName = BuildSessionRepository.safeName(session.game)
+                        val log = buildSessions.logFile(id)
+                        val zip = withContext(Dispatchers.IO) {
+                            LogBundle.build(this@MainActivity, paths.work,
+                                listOfNotNull(log?.let { "$safeName-${id.take(8)}.log" to it }),
+                                bundleDir(), "$safeName-${id.take(8)}")
                         }
-                        if (copied) {
-                            val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", snapshot)
-                            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, uri)
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            startActivity(Intent.createChooser(send, locale.str(R.string.builds_log_share)))
-                        } else toast(locale.str(R.string.builds_log_unavailable))
+                        shareBundle(zip, R.string.builds_log_share, R.string.builds_log_empty)
                     }
                 }
             }
@@ -363,6 +359,29 @@ class MainActivity : ComponentActivity() {
     fun versionName(): String = AppVersion.of(this).ifEmpty { "?" }
 
     fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+
+    /**
+     * The log bundle's folder in the cache: the FileProvider serves it (res/xml/file_paths.xml), and the
+     * bundles older than a week are deleted when a new one is packed.
+     */
+    private fun bundleDir() = File(cacheDir, "shared-logs")
+
+    /** Sends the log bundle (a zip) out; nothing when there was nothing to pack */
+    private fun shareBundle(zip: File?, titleRes: Int, emptyRes: Int) {
+        if (zip == null) {
+            toast(locale.str(emptyRes))
+            return
+        }
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", zip)
+            val send = Intent(Intent.ACTION_SEND).setType("application/zip").putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(send, locale.str(titleRes)))
+        } catch (e: Exception) {
+            AppLog.line("[RED] the log bundle could not be shared: ${e.message}")
+            toast(locale.str(R.string.main_log_bundle_failed))
+        }
+    }
 
     // ---- Activity-owned state holders injected by Hilt ------------------------------------------------------------
 

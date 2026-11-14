@@ -130,6 +130,13 @@ class BuildSessionRepository @Inject constructor(
         true
     } catch (_: Exception) { false }
 
+    /** The build history's logs, named for the log bundle's entries (the game and the build) */
+    fun logFiles(): List<Pair<String, File>> = mutableSessions.value.filter { it.logAvailable }.mapNotNull { s ->
+        logFile(s.id)?.let { s to it }
+    }.map { (s, f) ->
+        "${safeName(s.game)}-${s.id.take(8)}.log" to f
+    }
+
     /** Reads a bounded byte window so viewers can page through long logs. */
     fun readLog(id: String, offset: Long = 0, length: Int = 64 * 1024): String {
         val f = logFile(id) ?: return ""
@@ -197,5 +204,8 @@ class BuildSessionRepository @Inject constructor(
         private const val RECORD = "record.json"
         private const val LOG = "log.txt"
         private val order = compareByDescending<BuildSession> { it.startedAt }.thenByDescending { it.id }
+
+        /** The game file's name, safe as a file name (the bundle's entries) */
+        fun safeName(game: String): String = File(game).nameWithoutExtension.replace(Regex("[^A-Za-z0-9_-]"), "_")
     }
 }

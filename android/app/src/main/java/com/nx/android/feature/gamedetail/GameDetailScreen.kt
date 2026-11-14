@@ -78,6 +78,7 @@ import com.nx.android.appstate.PortState
 import com.nx.android.domain.drivers.Driver
 import com.nx.android.data.GameIcon
 import com.nx.android.data.GameLog
+import com.nx.android.data.LogBundle
 import com.nx.android.data.Player
 import com.nx.android.data.SaveShare
 import com.nx.android.data.StorageVolumes
@@ -323,21 +324,24 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
         }
     }
 
-    /** 游戏运行日志：宿主把它写在了数据包里，拷进下载目录再发出去（整份文件，不截断） */
+    /** 游戏运行日志：宿主把它写在了数据包里（上一轮的在 log.prev.txt），打成日志包再发出去 */
     fun shareGameLog(target: Ported) {
         if (!actions.storageOk()) { actions.onToast(locale.str(R.string.lib_log_needs_storage)); return }
         val game = e.label
+        val facts = GameLog.facts(game, target.titleId, target.display, target.status, target.playerApiRevision)
         scope.launch {
             val r = withContext(Dispatchers.IO) {
-                runCatching { GameLog.copyTo(target.pack, SaveShare.packagesDir(context), game) }
+                runCatching {
+                    GameLog.bundle(LogBundle.deviceText(context), game, facts, target.pack, SaveShare.packagesDir(context))
+                }
             }
-            r.onSuccess { copied ->
-                if (copied == null) {
+            r.onSuccess { bundle ->
+                if (bundle == null) {
                     actions.onToast(locale.str(R.string.lib_no_runtime_log))
                 } else {
                     runCatching {
                         context.startActivity(
-                            Intent.createChooser(SaveShare.textIntent(context, copied), locale.str(R.string.main_share_log)))
+                            Intent.createChooser(SaveShare.intent(context, bundle), locale.str(R.string.main_share_log)))
                     }.onFailure { e ->
                         actions.onToast(if (e is ActivityNotFoundException) locale.str(R.string.lib_no_receiver)
                         else locale.str(R.string.lib_share_failed, failureText(locale, e)))

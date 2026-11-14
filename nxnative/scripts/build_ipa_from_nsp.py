@@ -482,25 +482,44 @@ def _app_of_tid(tid):
 def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None, base=None):
     """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}. exts: the kinds of dump to take (the Android porter adds nsz, xcz);
     keys: prod.keys, whose header_key reads the title ID of a dump with neither a ticket nor a [title ID] tag from its NCA headers; base: the game file that was picked (the folder may hold
-    other games: they are left out, and the updates and the DLC of this one are taken)"""
+    other games: they are left out, and the updates and the DLC of this one are taken). The updates and the DLC are also taken from the first-level subfolders of the picked file's folder (a
+    download's layout: 本体加补丁/1DLC/): only that game's files, never the ones of another game"""
     fams, unknown = {}, []
     hk = header_key(keys) if keys else None
     want = None
     if base is not None:
         bt = title_of(base, hk)
         want = _app_of_tid(bt) if bt is not None else None
-    for p in sorted(p for e in exts for p in nsp_dir.glob(f'*.{e}')):   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
+
+    def take(p):
+        """Put the file in its game's place: the base, an update or a DLC. Nothing when it is not the picked game's."""
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
-            say(f'skipping an empty file: {p.name}'); continue
+            say(f'skipping an empty file: {p.name}'); return None
         tid = title_of(p, hk)
-        if tid is None: unknown.append(p); continue
+        if tid is None: unknown.append(p); return None
         low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
         app = _app_of_tid(tid)
-        if want is not None and app != want: continue   # the other games of the folder are not the one that was picked
+        if want is not None and app != want: return None   # the other games of the folder are not the one that was picked
         f = fams.setdefault(app, {'base': None, 'updates': [], 'dlc': []})
         if low == 0: f['base'] = p
         elif low == 0x800: f['updates'].append((version_of(p), p))
         else: f['dlc'].append((tid, version_of(p), p))
+        return app
+
+    for p in sorted(p for e in exts for p in nsp_dir.glob(f'*.{e}')):   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
+        take(p)
+    # the updates and the DLC often sit in a subfolder next to the base (a download's layout: 本体加补丁/1DLC/): one level, and only the picked game's files
+    ours = want if want is not None else (next(iter(fams)) if len(fams) == 1 else None)
+    if ours is not None and nsp_dir.is_dir():
+        for d in sorted(x for x in nsp_dir.iterdir() if x.is_dir()):
+            for p in sorted(p for e in exts for p in d.glob(f'*.{e}')):
+                if p.stat().st_size == 0: say(f'skipping an empty file: {p.name}'); continue
+                tid = title_of(p, hk)
+                if tid is None or _app_of_tid(tid) != ours: continue   # another game's file (or an unreadable one): left out
+                f = fams.setdefault(ours, {'base': None, 'updates': [], 'dlc': []})
+                low = tid & 0xFFF
+                if low == 0x800: f['updates'].append((version_of(p), p))
+                elif low != 0: f['dlc'].append((tid, version_of(p), p))   # a base game in a subfolder is not taken: the picked file is the base
     if base is not None and want is None and fams:
         # the picked file's title could not be read (no ticket, no tag): it is the base game
         fam = next(iter(fams.values()))

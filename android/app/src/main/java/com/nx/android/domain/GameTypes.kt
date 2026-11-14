@@ -102,6 +102,9 @@ data class Ported(
     val display: String = "", // 清单里的显示版本（游戏自己的版本号，如 1.1.1）：老的数据包没有这一项
     val romfsAt: String = "", // 清单里的 romfs_at：游戏的文件不在包里，在工作区（老的数据包没有这一项：它们自带 RomFS）
 ) {
+    /** The pack has its host: it is a port, not a leftover manifest. */
+    val hasHost: Boolean get() = host.isFile
+
     /** The pack has its host, was built for the current player interface revision, and its game's files are there. */
     val runnable: Boolean get() = host.isFile && playerApiRevision == PlayerApiRevision.CURRENT && !romfsMissing
 

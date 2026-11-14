@@ -32,11 +32,38 @@ static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k
 ''' + controller + r'''
 static int64_t mixed_work(int i) { return i % 64 < 48 ? 15000000 : 27000000; }
 int main(int argc, char **argv) {
-    (void)argv;
-    int median = argc > 1;
+    const char *mode = argc > 1 ? argv[1] : "";
+    int median = strcmp(mode, "median") == 0;
     unsetenv("DM_FPS_PIN"); unsetenv("DM_ADAPTIVE_FPS");
     if (median) setenv("DM_ADAPT_UP_PCT", "50", 1); else unsetenv("DM_ADAPT_UP_PCT");
     assert(dm_present_period_adapt(16666667) == 16666667);
+    if (strcmp(mode, "pin") == 0) {
+        // DM_FPS_PIN holds one step (the drawer's frame rate step sets it while the game runs):
+        // work that would drop the rate leaves it where the pin puts it
+        setenv("DM_FPS_PIN", "40", 1);
+        g_step = 1; g_last_change = 0; g_last_up = 0; g_nwork = 64; g_nshown = 64; g_ok_frames = 0;
+        for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
+        adapt_frame(27000000, 6000000000ll);
+        assert(g_step == 1);   // held at 40 fps, though the work says 30
+        // a step the host does not know lets the rate adapt again (the variable is read every 30th frame)
+        setenv("DM_FPS_PIN", "50", 1);
+        g_step = 1; g_last_change = 0; g_nwork = 64; g_nshown = 64;
+        for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
+        for (int i = 0; i < 31; i++) adapt_frame(27000000, 6000000000ll);
+        assert(g_step == 2);   // 30 fps: the work decides again
+        // 0 releases the pin, and 60 holds the short step against the same work
+        setenv("DM_FPS_PIN", "0", 1);
+        g_step = 2; g_last_change = 0; g_nwork = 64; g_nshown = 64;
+        for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
+        for (int i = 0; i < 31; i++) adapt_frame(27000000, 6000000000ll);
+        assert(g_step == 2);   // 30 fps: the pin released, the work keeps it there
+        setenv("DM_FPS_PIN", "60", 1);
+        g_step = 2; g_last_change = 0; g_nwork = 64; g_nshown = 64;
+        for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
+        for (int i = 0; i < 31; i++) adapt_frame(27000000, 6000000000ll);
+        assert(g_step == 0);   // 60 fps: the pin pulled it back up
+        return 0;
+    }
     g_step = 1; g_last_change = 1000000000ll; g_up_hold = 20000000000ll;
     g_nwork = 64; g_nshown = 64;
     for (int i = 0; i < 64; i++) g_work_hist[i] = mixed_work(i);
@@ -68,7 +95,7 @@ int main(int argc, char **argv) {
             c.write_text(harness, encoding='utf-8')
             result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            for args in ([], ['median']):
+            for args in ([], ['median'], ['pin']):
                 with self.subTest(policy=args or 'default'):
                     result = subprocess.run([str(exe), *args], capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

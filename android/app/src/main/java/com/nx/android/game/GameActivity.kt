@@ -47,6 +47,8 @@ import com.nx.android.data.AppLocale
 import com.nx.android.data.FrameGenSettings
 import com.nx.android.data.LosslessDll
 import com.nx.android.data.PrefsStore
+import com.nx.android.data.RatePin
+import com.nx.android.data.RateSettings
 import com.nx.android.data.drivers.Drivers
 import com.nx.android.data.playback.PackEnvStore
 import com.nx.android.game.hud.HudField
@@ -116,6 +118,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var paused by mutableStateOf(false)
     private var drawerOpen by mutableStateOf(false)
     private var fgSettings: FrameGenSettings? = null
+    private var rateSettings: RateSettings? = null
     private var packPath: String? = null
     private lateinit var padView: PadView
 
@@ -222,6 +225,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         // the title id keeps this game's saves, temp and log apart from the others' (host_start_common)
         fgSettings = titleId?.let { FrameGenSettings(PrefsStore(this), it) }
+        rateSettings = titleId?.let { RateSettings(PrefsStore(this), it) }
         // the default driver: a game whose driver was never picked runs on the app's built-in one (the row goes
         // into the pack's env.txt, which the host reads). A driver the player picked is left alone.
         applyDefaultDriver(java.io.File(pack))
@@ -240,6 +244,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         hostRunning = true
         // 手柄的显示与浓淡：App 的偏好是唯一真值，宿主只留运行时的副本（settings.txt 不再写这两项）
         runCatching { Native.padPrefs(padView.shown, padView.opacity) }
+        // 玩家选的帧率档位：start 之后才下发——包的 env.txt 在宿主启动时读过，晚 setenv 的那份留下来，
+        // 玩家的选择盖过档案自己的 DM_FPS_PIN。没选过就不下发，档案的默认继续说话。
+        rateSettings?.load()?.let { pin -> runCatching { Native.perfPinSet(pin.fps) } }
         watchControllers()
     }
 
@@ -264,6 +271,15 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         PrefsStore(this).put(PrefsStore.HUD_FIELDS, HudField.keys(fields))
     }
     private fun saveHudFahrenheit(on: Boolean) { hudFahrenheit = on; PrefsStore(this).put(PrefsStore.HUD_TEMP_F, on) }
+
+    /**
+     * 帧率档位：App 的偏好是唯一真值（按游戏记着），宿主那边只是运行时的副本——
+     * 钉住一档（60/40/30）或放它自由自适应（0），即时生效（perf_android.c 的 fps_pin 每 30 帧重读一次）。
+     */
+    private fun saveRatePin(pin: RatePin) {
+        rateSettings?.save(pin)
+        runCatching { Native.perfPinSet(pin.fps) }
+    }
 
     /**
      * 宿主的上行通知（front_player.c 的 dm_app_notice）：宿主不知道抽屉，它只说发生了什么。
@@ -343,10 +359,13 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 open = drawerOpen,
                 onOpenChange = { drawerOpen = it },
                 settings = fgSettings,
+                onRatePin = { saveRatePin(it) },
                 padShown = { padView.shown },
                 onPadShown = { padView.shown = it },
                 padOpacity = { padView.opacity },
                 onPadOpacity = { padView.opacity = it },
+                padStyle = { padView.style },
+                onPadStyle = { padView.style = it },
                 hudStats = { hudStats },
                 onHudStats = { saveHudStats(it) },
                 hudDevice = { hudDevice },

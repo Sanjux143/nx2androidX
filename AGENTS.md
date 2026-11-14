@@ -121,6 +121,7 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 | 加游戏档案 / 改共享核心（宿主、Vulkan、着色器、输入、覆盖层） | `.claude/skills/nx2android-dev` |
 | 真机排障（闪烁、崩溃、掉帧、压测、实况验证） | `.claude/skills/switch-android-port` |
 | 推给上游（开 PR、rebase、回 review） | `.claude/skills/nx2android-upstream-pr` |
+| 同步上游（三线拓扑的操作步骤、三张清单、合并的坑） | `../openspec-hub/nx2android/my-docs/上游同步.md`、`../openspec-hub/nx2android/my-docs/踩坑/` |
 | 分层与契约、目录职责 | `docs/ARCHITECTURE.md` |
 | 从仓库运行、构建、测试、提交信息 | `docs/DEVELOPMENT_GUIDE.md` |
 | 游戏进度清单 | `docs/PORT_CHECKLIST.md`、`docs/PORT_STATUS.md` |

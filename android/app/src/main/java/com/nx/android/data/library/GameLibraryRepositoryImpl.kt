@@ -175,6 +175,8 @@ class GameLibraryRepositoryImpl @Inject constructor(
         packPaths[ported.titleId] = ported.pack.absolutePath
         saveSources()
         savePackPaths()
+        // the same game under another pack name (the pack's name is the profile's ipa): the older one goes, its saves come along
+        OlderPackCleanup.removeOlderPacks(ported.pack, portsDirs()).forEach { Log.i("nx2a", it) }
         return ported.titleId
     }
 
