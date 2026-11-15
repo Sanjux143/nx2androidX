@@ -30,22 +30,44 @@ class RuntimeUpdateState private constructor(
     var phase by mutableStateOf(if (pending == null) RuntimeUpdatePhase.IDLE else RuntimeUpdatePhase.FAILED); private set
     val running: Boolean get() = phase == RuntimeUpdatePhase.RUNNING
 
+    /** 这次失败是「档案对不上」：玩家可以让它用当前档案再来一次 */
+    var profileDrift by mutableStateOf(false); private set
+
+    /** 下一次更新用当前档案（玩家点了「用当前档案继续」；成功之后清掉） */
+    var allowDrift by mutableStateOf(false); private set
+
     fun begin(path: String, label: String): Boolean {
         if (running || path.isBlank()) return false
         pack = path
         name = label
         interrupted = false
         reason = ""
+        profileDrift = false
         savePending(path)
         phase = RuntimeUpdatePhase.RUNNING
         return true
     }
 
-    fun finish(success: Boolean, why: String = "") {
+    fun finish(success: Boolean, why: String = "", profileDrift: Boolean = false) {
         if (!running) return
         savePending(null)
         reason = if (success) "" else why
+        this.profileDrift = profileDrift
+        // 这一次用的档案已经记进清单：下次按新指纹核对，不再问
+        allowDrift = false
         phase = if (success) RuntimeUpdatePhase.SUCCEEDED else RuntimeUpdatePhase.FAILED
+    }
+
+    /** 玩家让 App 用当前档案再来一次（这份档案就是完整重新移植会用的那份） */
+    fun useCurrentProfile() {
+        allowDrift = true
+    }
+
+    /** 这一轮的更新用当前档案吗（玩家点了「用当前档案继续」才有）：只对这一次有效 */
+    fun takeDrift(): Boolean {
+        val drift = allowDrift
+        allowDrift = false
+        return drift
     }
 
     fun dismiss() {
@@ -56,5 +78,7 @@ class RuntimeUpdateState private constructor(
         name = ""
         interrupted = false
         reason = ""
+        profileDrift = false
+        allowDrift = false
     }
 }

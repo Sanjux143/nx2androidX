@@ -72,8 +72,16 @@ private val NxTypography = Typography(
 fun NxTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = NxColors, typography = NxTypography) {
         // 页面自己画背景（不用 Surface），默认的文字颜色在这里给足：没写 color 的 Text 才不会黑字落黑底
+        // 水波纹全关：Material3 的主题波纹读 LocalRippleConfiguration，给 null 就不再画。
+        // 组件自己的 ripple() 与裸 Modifier.clickable 都走这一条路（MaterialTheme 把 LocalIndication
+        // 指向了那个节点），所以这一行关掉的是全 app 的波纹。
+        // 为什么不要：抽屉画在跑着的游戏之上，水波纹那层按住的每一帧都要重绘整个界面层，
+        // 跟游戏抢 GPU（120Hz 的屏上就是每秒 120 次）。而这层反馈本来就看不见——选中、开关
+        // 都是元素自己的颜色在说话。
         androidx.compose.runtime.CompositionLocalProvider(
-            androidx.compose.material3.LocalContentColor provides NxColors.onBackground, content = content
+            androidx.compose.material3.LocalContentColor provides NxColors.onBackground,
+            androidx.compose.material3.LocalRippleConfiguration provides null,
+            content = content
         )
     }
 }

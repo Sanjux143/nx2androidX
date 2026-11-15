@@ -31,6 +31,7 @@ def _parser():
     po.add_argument('--debug', action='store_true', help='a development build: debug information, debuggable, DM_CTL key presses')
     po.add_argument('--experimental', action='store_true', help='try a game not ported to Android yet (a profile guessed from a survey of its files; it may not start)')
     po.add_argument('--package', default='', help="the app's package instead of the profile's (a test install beside another build of the game) (with --game-apk)")
+    po.add_argument('--native-keyboard', action='store_true', help='use the Android Unicode keyboard (requires JDK and Android SDK platform/build-tools)')
     po.add_argument('--external-display', action='store_true', help='build the external-screen gamepad activity (requires Android SDK platform and build-tools)')
     po.add_argument('--fps60', action='store_true', help='60 fps: the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub')
     po.add_argument('--touch', action='store_true',
@@ -68,6 +69,9 @@ def _parser():
     rt = sub.add_parser('rebuild-runtime', help='rebuild a pack runtime without the original game files')
     rt.add_argument('pack')
     rt.add_argument('--no-lsfg', action='store_true')
+    rt.add_argument('--allow-profile-drift', action='store_true',
+                    help='rebuild with the profile the game has now even when it is not the one the pack was built with '
+                         '(that profile is the one a full re-port would use too; the game may behave differently than when it was ported)')
     rt.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
     rt.add_argument('--progress', choices=('json', 'lines'), default='lines')
     ins = sub.add_parser('install', help='install a port made earlier'); ins.add_argument('data', help='the data pack folder (<App>-data)'); ins.add_argument('--apk', help='the APK (default: <App>.apk beside the pack)')
@@ -189,25 +193,30 @@ def cmd_port(a):
         try: install.romfs_target(a.romfs_at)   # a folder the app cannot read fails now, not after the shaders
         except BuildError as e: print(e, file=sys.stderr); return 2
     opts = pipeline.Options(folder=Path(a.folder), keys=Path(a.keys) if a.keys else None, firmware=Path(a.firmware) if a.firmware else None, out=Path(a.out) if a.out else None, version=a.version, language=a.language,
-                            app_name=a.app_name, app=a.app, install=a.install, device=a.device, replace_signer=a.replace_signer, debug=a.debug, experimental=a.experimental, package=a.package, fps60=a.fps60, touch=a.touch, mt_replay=a.mt_replay, vulkan_driver=a.vulkan_driver,
-                            vulkan_driver_dir=a.vulkan_driver_dir, shared_font=a.shared_font,
-                            vercode_offset=offset, alias_headroom=a.alias_headroom, romfs_at=a.romfs_at, romfs_push=a.romfs_push, external_display=a.external_display, jobs=a.jobs, no_lsfg=a.no_lsfg)
+                                app_name=a.app_name, app=a.app, install=a.install, device=a.device, replace_signer=a.replace_signer, debug=a.debug, experimental=a.experimental, package=a.package, fps60=a.fps60, touch=a.touch, mt_replay=a.mt_replay, vulkan_driver=a.vulkan_driver,
+                                vulkan_driver_dir=a.vulkan_driver_dir, shared_font=a.shared_font,
+                                vercode_offset=offset, alias_headroom=a.alias_headroom, romfs_at=a.romfs_at, romfs_push=a.romfs_push, external_display=a.external_display, native_keyboard=a.native_keyboard, jobs=a.jobs, no_lsfg=a.no_lsfg)
     return _with_progress(a.progress, lambda: pipeline.emit_result(pipeline.Port(opts).run()))
 
 
 def cmd_rebuild_runtime(a):
-    from porter.runtime_update import rebuild
+    from porter.runtime_update import ProfileDrift, rebuild
     def emit(message):
         if a.progress == 'json': print(json.dumps({'ev': 'say', 'msg': message}), flush=True)
         else: print(message, flush=True)
     try:
         if a.progress == 'json': print(json.dumps({'ev': 'stage', 'k': 1, 'n': 1, 'name': 'Update runtime'}), flush=True)
-        result = rebuild(a.pack, no_lsfg=a.no_lsfg, jobs=a.jobs, emit=emit)
+        result = rebuild(a.pack, no_lsfg=a.no_lsfg, jobs=a.jobs, allow_profile_drift=a.allow_profile_drift, emit=emit)
         if a.progress == 'json': print(json.dumps({'ev': 'result', **result}), flush=True)
         else: emit('Runtime updated: ' + result['data'])
         return 0
     except KeyboardInterrupt:
         emit('[RED] Runtime update cancelled. Check the game status before retrying.'); return 130
+    except ProfileDrift as error:
+        # 档案对不上：App 拿这条事件知道「玩家还可以用当前档案再来一次」
+        if a.progress == 'json': print(json.dumps({'ev': 'profile-drift', 'msg': str(error)}), flush=True)
+        else: emit('Port the game again from its original files, or use --allow-profile-drift to rebuild with the profile the game has now.')
+        emit(f'[RED] {error}'); return 1
     except Exception as error:
         emit(f'[RED] {error}'); return 1
 
@@ -295,13 +304,17 @@ def cmd_saves(a):
 
 def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt without the game files
     import contextlib
-    from porter import config, driver, host, saves, toolchain
+    from porter import config, driver, host, paths, saves, toolchain
     from porter.upstream import BuildError
     try:
         with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):   # with --json, stdout is the one JSON document
             cfg = config.load(); adb = saves.connect(toolchain.find_adb(cfg), a.device or cfg.get('device'))
-            out = driver.swap(adb, saves.pick_app(adb, a.package), None if a.system else a.library) if a.cmd == 'driver' else \
-                  host.update(adb, saves.pick_app(adb, a.package), a.jobs)
+            lock = adb.hold(paths.user_dir())   # they reinstall the APK: not while porter install runs on the device
+            try:
+                out = driver.swap(adb, saves.pick_app(adb, a.package), None if a.system else a.library) if a.cmd == 'driver' else \
+                      host.update(adb, saves.pick_app(adb, a.package), a.jobs)
+            finally:
+                if lock: lock.close()
     except BuildError as e:
         if a.json: _print_json({'error': str(e)})
         else: print(e, file=sys.stderr)

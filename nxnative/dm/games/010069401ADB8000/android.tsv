@@ -8,6 +8,7 @@ tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Andro
 package	org.nx2a.unicornoverlord
 orientation	landscape
 requires	bcn
+graphics	nvn
 # handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on a Legion Y700 2023 (Adreno 730); on the Adreno 830 docked holds 60 fps
 setting	docked=0
 # the replay on its own thread: in battle it took 17.5 ms of the game thread's 33 ms a frame on the Adreno 730

@@ -91,6 +91,8 @@ private fun PerfHud(
                     gameFps = stats.gameFps,
                     presentedFps = stats.presentedFps,
                     frameMs = stats.frameMs,
+                    // the frame generation's state (the label follows it): an old host has no entry for it
+                    fgState = HudData.fgState(runCatching { Native.frameGenStatus() }.getOrNull()),
                 )
             } else {
                 sample = HudSampler.take(ctx, fields)   // the host is not up yet: the device's readings alone

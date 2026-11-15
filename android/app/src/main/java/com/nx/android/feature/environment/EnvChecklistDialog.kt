@@ -45,6 +45,7 @@ import com.nx.android.feature.environment.EnvironmentCheckUiState
 import com.nx.android.feature.environment.EnvironmentCheckViewModel
 import com.nx.android.feature.onboarding.OnboardingViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nx.android.core.ui.components.FirmwareHint
 import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.components.StatusDot
 import com.nx.android.core.ui.theme.NxPalette
@@ -63,6 +64,8 @@ fun EnvChecklistDialog(
     portRunning: Boolean,
     onPrepareEnv: () -> Unit,
     onPickKeys: () -> Unit,
+    firmware: String,
+    onImportFirmware: () -> Unit,
     onRunOnboarding: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -114,6 +117,16 @@ fun EnvChecklistDialog(
                         action = if (state.keysOk) null else stringResource(R.string.common_modify),
                         onAction = onPickKeys,
                     )
+                    // 固件：整机级的一份，可选项（只有读主机系统数据的游戏才需要）
+                    CheckLine(
+                        stringResource(R.string.fw_title),
+                        if (firmware.isNotBlank()) EnvCheck.Level.OK else EnvCheck.Level.HINT,
+                        if (firmware.isNotBlank()) firmware else stringResource(R.string.fw_not_imported),
+                        action = if (firmware.isNotBlank()) null else stringResource(R.string.fw_import),
+                        onAction = onImportFirmware,
+                    )
+                    // 这一行下面说明它是干什么的：光写「没导入」，玩家不知道要不要管它
+                    if (firmware.isBlank()) FirmwareHint()
                     // 子进程限制：Android 会停掉本应用的子进程，移植器就是其中之一（它是活最久的那个）
                     PhantomLine(state, viewModel::refreshPhantom) { phantomOpen = true }
 

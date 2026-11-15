@@ -12,15 +12,30 @@ data class FrameGenKnobs(var on: Boolean, var mult: Int, var target: Int, var fl
         val MULTS = intArrayOf(2, 3, 4)
         val TARGETS = intArrayOf(0, 60, 90, 120)   // 0 = the game's own pace times the multiplier
         val FLOWS = intArrayOf(0, 25, 50, 75, 100) // 0 = auto (the game's own resolution)
+        /**
+         * The optical flow's resolution, in % of the picture, when the player has not chosen: 50, not auto.
+         * Auto is the game's own resolution — the full-size flow at 1080p costs more than the frame it buys
+         * (the same lesson upstream: at 100 % "was not worth one generated frame"). 25/50/75/100 stay available.
+         */
+        const val DEFAULT_FLOW = 50
         fun clampMult(v: Int) = if (v < 2) 2 else if (v > 4) 4 else v
         fun clampFlow(v: Int) = if (v <= 0) 0 else if (v < 25) 25 else if (v > 100) 100 else v
     }
 
-    /** The env rows for the game's start (DM_LSFG*); the DLL row only when the private copy is there */
+    /**
+     * The env rows for the game's start (DM_LSFG*).
+     *
+     * The knob rows only when the generation is on. The DLL's path is a different thing: it says "the device has this file", not
+     * "the generation is wanted now" — so it goes whenever the file is there. The host reads the path the first time the player turns
+     * the generation on (in the drawer, with the game running): without that row it would say the DLL is missing although the
+     * settings page has it, and the only way out was to leave the game and start it again.
+     */
     fun envLines(dllPath: String?): Array<String> {
-        if (!on) return emptyArray()
-        val m = clampMult(mult); val f = clampFlow(flow)
-        val rows = mutableListOf("DM_LSFG=1", "DM_LSFG_MULT=$m", "DM_LSFG_TARGET=${if (target < 0) 0 else target}", "DM_LSFG_FLOW=$f")
+        val rows = mutableListOf<String>()
+        if (on) {
+            val m = clampMult(mult); val f = clampFlow(flow)
+            rows += listOf("DM_LSFG=1", "DM_LSFG_MULT=$m", "DM_LSFG_TARGET=${if (target < 0) 0 else target}", "DM_LSFG_FLOW=$f")
+        }
         if (dllPath != null) rows.add("DM_LSFG_DLL=$dllPath")
         return rows.toTypedArray()
     }
@@ -37,7 +52,7 @@ class FrameGenSettings(private val prefs: PrefsStore, private val titleId: Strin
         on = prefs.bool("$base.on"),
         mult = FrameGenKnobs.clampMult(prefs.str("$base.mult").toIntOrNull() ?: 2),
         target = (prefs.str("$base.target").toIntOrNull() ?: 0).coerceAtLeast(0),
-        flow = FrameGenKnobs.clampFlow(prefs.str("$base.flow").toIntOrNull() ?: 0),
+        flow = FrameGenKnobs.clampFlow(prefs.str("$base.flow").toIntOrNull() ?: FrameGenKnobs.DEFAULT_FLOW),
     )
 
     fun save(k: FrameGenKnobs) {

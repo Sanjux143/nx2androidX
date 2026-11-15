@@ -41,8 +41,8 @@ FREQ = {0: 'vs', 1: 'hs', 2: 'ds', 3: 'ps', 4: 'gs', 5: 'cs'}   # EShaderFrequen
 
 _cc, _aes = None, None
 def aes_decrypt(key, data):
-    """AES-256 ECB decryption: CommonCrypto on the Mac (every Mac has it; no Python package needed), pycryptodome elsewhere (the phone app's payload ships it:
-    files/tool/pylibs). The porter runs where the game is, so the pak's encrypted index is read on a machine that has no CommonCrypto"""
+    """AES-256 ECB decryption: CommonCrypto on the Mac (every Mac has it; no Python package needed), pycryptodome elsewhere (requirements.txt; the Windows and Linux
+    bundles ship it, and the phone app's payload ships it in files/tool/pylibs). The porter runs where the game is, so the pak's encrypted index is read on a machine that has no CommonCrypto"""
     global _cc, _aes
     if _cc is None and _aes is None:
         try:

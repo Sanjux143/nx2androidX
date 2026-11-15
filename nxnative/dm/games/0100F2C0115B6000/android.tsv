@@ -28,6 +28,7 @@ status	experimental
 tested	v720896 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.zeldatearsofthekingdom
 orientation	landscape
+graphics	nvn
 setting	docked=0
 env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1

@@ -3,6 +3,8 @@ package com.nx.android.feature.gamedetail
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -79,7 +81,6 @@ import com.nx.android.domain.drivers.Driver
 import com.nx.android.data.GameIcon
 import com.nx.android.data.GameLog
 import com.nx.android.data.LogBundle
-import com.nx.android.data.Player
 import com.nx.android.data.SaveShare
 import com.nx.android.data.StorageVolumes
 import com.nx.android.domain.GameIdentity
@@ -90,8 +91,10 @@ import com.nx.android.domain.GameStatus
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.PackMover
 import com.nx.android.domain.Ported
-import com.nx.android.domain.saves.SAVE_PACKAGE_EXTENSION
 import com.nx.android.domain.saves.SaveRepository
+import com.nx.android.domain.saves.SaveSource
+import com.nx.android.domain.saves.SaveTarget
+import com.nx.android.data.saves.SaveIo
 import com.nx.android.domain.playback.RunOptionsSnapshot
 import com.nx.android.app.AppActions
 import com.nx.android.core.ui.LocalAppLocale
@@ -104,6 +107,8 @@ import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.components.StatusDot
 import com.nx.android.core.ui.components.rememberGameIcon
 import com.nx.android.core.ui.components.sizeText
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.failureText
 import com.nx.android.core.ui.theme.NxPalette
 import kotlinx.coroutines.Dispatchers
@@ -145,31 +150,26 @@ private data class RemovalRequest(val kind: Removal, val plan: GameCleanup.Plan,
 @Composable
 fun GameDetailRoute(lib: LibraryState, port: PortState, player: PlayerState,
                     e: GameEntry, installedDrivers: List<Driver>, actions: AppActions, onGoBuilds: () -> Unit,
-                    onRequest: (PickerRequest) -> Unit, onClose: () -> Unit) {
+                    onRequest: (PickerRequest) -> Unit, onClose: () -> Unit, navActive: Boolean = false) {
     val viewModel: GameDetailViewModel = hiltViewModel(key = "game-detail-${e.titleId}")
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val locale = LocalAppLocale.current
     LaunchedEffect(e.titleId, e.pack?.pack) { viewModel.open(e.titleId, e.pack?.pack) }
     DisposableEffect(viewModel, e.titleId) {
         onDispose { viewModel.close(e.titleId) }
     }
-    val shareFile: (File) -> Unit = { file ->
-        runCatching {
-            context.startActivity(Intent.createChooser(SaveShare.intent(context, file), locale.str(R.string.lib_share_saves)))
-        }.onFailure { actions.onToast(locale.str(R.string.lib_no_receiver)) }
-    }
-    GameDetailScreen(lib, port, player, e, installedDrivers, viewModel.saveRepository, shareFile,
-        uiState, viewModel::selectLanguage, viewModel::selectDriver, actions, onGoBuilds, onRequest, onClose)
+    GameDetailScreen(lib, port, player, e, installedDrivers, viewModel.saveRepository, viewModel.saveIo,
+        uiState, viewModel::selectLanguage, viewModel::selectDriver, actions, onGoBuilds, onRequest, onClose,
+        navActive = navActive)
 }
 
 @Composable
 private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerState,
                         e: GameEntry, installedDrivers: List<Driver>, saveRepository: SaveRepository,
-                        shareFile: (File) -> Unit, detailState: GameDetailUiState,
+                        saveIo: SaveIo, detailState: GameDetailUiState,
                         onSelectLanguage: (String?) -> Unit, onSelectDriver: (String?) -> Unit,
                         actions: AppActions, onGoBuilds: () -> Unit,
-                        onRequest: (PickerRequest) -> Unit, onClose: () -> Unit) {
+                        onRequest: (PickerRequest) -> Unit, onClose: () -> Unit,
+                        navActive: Boolean = false) {
     val locale = LocalAppLocale.current
     val status = lib.statusOf(e)
     // Title ID：游戏的身份（还没构建过的还没有）
@@ -191,6 +191,10 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
     // 正在搬移/删除时：返回键不做事（别把进行中的动作打断，面板也别关）
     BackHandler(enabled = moving || removing) { }
     BackHandler(enabled = !(moving || removing)) { onClose() }
+    // 手柄的返回键：跟系统的返回键一条路（正在搬移/删除时同样不做事）
+    OnNavKey(enabled = navActive && !moving && !removing) { key ->
+        if (key == NavKey.Back) onClose()
+    }
 
     /**
      * 开始构建：源文件在就直接带过去；不在了（玩家把它挪走腾空间去了）就请他重新选一个。
@@ -384,7 +388,8 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        listOfNotNull(titleId, versionTag(ported), statusLabel(status), experimentalTag(ported), reportTag(ported)).joinToString("  ·  "),
+                        (listOfNotNull(titleId, versionTag(ported), statusLabel(status), experimentalTag(ported), reportTag(ported)) +
+                            com.nx.android.feature.library.needsTags(lib.profileOf(titleId), ported)).joinToString("  ·  "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -459,7 +464,7 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         RunOptions(installedDrivers, detailState.runOptions,
                             detailState.runOptionsFailure, onSelectLanguage, onSelectDriver)
                         Spacer(Modifier.height(10.dp))
-                        SaveRows(ported, e.label, player, saveRepository, actions, onRequest, actions.onToast, shareFile)
+                        SaveRows(ported, e.label, saveRepository, saveIo, actions.onToast)
                         Spacer(Modifier.height(6.dp))
                         // 别的游戏在跑时锁住这个：跑着的那个自己不受限（点它的「运行」是回到它）
                         val locked = player.running && player.titleId != ported.titleId
@@ -703,238 +708,97 @@ private fun RunOptions(
     failure?.let { Hint(failureText(LocalAppLocale.current, it), size = 11.sp) }
 }
 
-/**
- * 存档（库页侧）：导出成一个可以发出去的包，导入把别人发来的包换进去。
- *
- * 活存档是应用自己的文件（宿主把它挂在 filesDir/save/<titleId>），所以这里直接动它：不写请求文件，
- * 也不用等下次启动游戏。游戏在跑的时候不动它——那会儿它正往存档里写。
- */
-@Composable
-private fun SaveRows(ported: Ported, gameName: String, player: PlayerState, repository: SaveRepository,
-                     actions: AppActions, onRequest: (PickerRequest) -> Unit, onToast: (String) -> Unit,
-                     onShareFile: (File) -> Unit) {
-    val locale = LocalAppLocale.current
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
-    val titleId = ported.titleId
-    val packSaves = remember(ported.pack) { File(ported.pack, "saves") }
-    val packagesDir = remember(repository) { repository.packagesDirectory() }
+    /**
+     * 存档（库页侧）：导出成一个 zip 交给系统文件管理器选地方，导入从系统文件管理器选一个 zip 换进去。
+     *
+     * 活存档是应用自己的文件（宿主把它挂在 filesDir/save/<titleId>），所以这里直接动它：不写请求文件，
+     * 也不用等下次启动游戏。回到库页时游戏已经退出，它不再往存档里写。
+     */
+    @Composable
+    private fun SaveRows(ported: Ported, gameName: String, repository: SaveRepository, io: SaveIo,
+                         onToast: (String) -> Unit) {
+        val locale = LocalAppLocale.current
+        val scope = rememberCoroutineScope()
+        val titleId = ported.titleId
 
-    var busy by remember { mutableStateOf(false) }
-    var reload by remember { mutableIntStateOf(0) }
-    var note by remember { mutableStateOf("") }          // 上一次做了什么（留在面板里，不只弹一下）
-    var askClose by remember { mutableStateOf(false) }
-    var pendingImport by remember { mutableStateOf<File?>(null) }
-    var pendingRestore by remember { mutableStateOf<File?>(null) }
-    var pendingDelete by remember { mutableStateOf<File?>(null) }
-    var packages by remember { mutableStateOf<List<File>>(emptyList()) }
-    var backups by remember { mutableStateOf<List<File>>(emptyList()) }
-    var backupSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+        var busy by remember { mutableStateOf(false) }
+        var note by remember { mutableStateOf("") }          // 上一次做了什么（留在面板里，不只弹一下）
+        var pendingImport by remember { mutableStateOf<SaveSource?>(null) }
 
-    LaunchedEffect(reload, packagesDir, packSaves) {
-        packages = repository.listPackages()
-        backups = repository.listBackups(packSaves)
-        backupSizes = buildMap {
-            for (backup in backups) {
-                val device = File(backup.parentFile, backup.name + ".device")
-                put(backup.absolutePath, repository.treeSize(backup) + if (device.isDirectory) repository.treeSize(device) else 0L)
-            }
-        }
-    }
-
-    // 游戏在跑的时候它的存档正被写着：这时不碰它
-    fun gameRunning(): Boolean = player.running || Player.playProcessAlive(context)
-
-    fun sharePackage(file: File) = onShareFile(file)
-
-    fun doExport() {
-        if (gameRunning()) { askClose = true; return }
-        if (!actions.storageOk()) { onToast(locale.str(R.string.lib_saves_need_storage)); return }
-        busy = true
-        scope.launch {
-            val r = repository.export(titleId, gameName, packSaves)
-            busy = false
-            reload++
-            r.onSuccess {
-                note = locale.str(R.string.lib_exported_to, it.parentFile?.absolutePath)
-                onToast(note)
-            }.onFailure {
-                if (it is com.nx.android.domain.saves.SaveOperationException &&
-                    it.reason == com.nx.android.domain.saves.SaveOperationException.Reason.GAME_RUNNING) {
-                    askClose = true
-                    return@onFailure
-                }
-                note = locale.str(R.string.lib_export_failed, failureText(locale, it))
-                onToast(note)
-            }
-        }
-    }
-
-    fun doImport(pkg: File) {
-        if (gameRunning()) { askClose = true; return }
-        busy = true
-        scope.launch {
-            val r = repository.import(titleId, pkg, packSaves)
-            busy = false
-            reload++
-            r.onSuccess {
-                note = if (it != null) locale.str(R.string.lib_imported_backup, it) else locale.str(R.string.lib_imported)
-                onToast(note)
-            }.onFailure {
-                if (it is com.nx.android.domain.saves.SaveOperationException &&
-                    it.reason == com.nx.android.domain.saves.SaveOperationException.Reason.GAME_RUNNING) {
-                    askClose = true
-                    return@onFailure
-                }
-                note = locale.str(R.string.lib_import_failed, failureText(locale, it))
-                onToast(note)
-            }
-        }
-    }
-
-    fun doRestore(backup: File) {
-        if (gameRunning()) { askClose = true; return }
-        busy = true
-        scope.launch {
-            val r = repository.restore(titleId, backup, packSaves)
-            busy = false
-            reload++
-            r.onSuccess {
-                note = if (it != null) locale.str(R.string.lib_restored_backup, it) else locale.str(R.string.lib_restored)
-                onToast(note)
-            }.onFailure {
-                if (it is com.nx.android.domain.saves.SaveOperationException &&
-                    it.reason == com.nx.android.domain.saves.SaveOperationException.Reason.GAME_RUNNING) {
-                    askClose = true
-                    return@onFailure
-                }
-                note = locale.str(R.string.lib_restore_failed, failureText(locale, it))
-                onToast(note)
-            }
-        }
-    }
-
-    fun shareBackup(backup: File) {
-        busy = true
-        scope.launch {
-            val r = repository.prepareBackupShare(titleId, gameName, backup, packSaves)
-            busy = false
-            reload++
-            r.onSuccess { sharePackage(it) }.onFailure { onToast(locale.str(R.string.lib_package_failed, failureText(locale, it))) }
-        }
-    }
-
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-    Text(locale.str(R.string.lib_section_saves), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-        QuietButton(locale.str(R.string.lib_export_saves), onClick = { doExport() }, modifier = Modifier.weight(1f), enabled = !busy)
-        QuietButton(locale.str(R.string.lib_import_saves), onClick = {
-            onRequest(PickerRequest(PickerMode.FILE, setOf(SAVE_PACKAGE_EXTENSION), packagesDir, locale.str(R.string.lib_choose_save_package), onPicked = { pkg ->
-                val id = repository.titleIdInPackage(pkg.name)
-                if (id != null && !id.equals(titleId, ignoreCase = true)) {
-                    note = locale.str(R.string.lib_other_games_save, id)
+        fun doExport(target: SaveTarget) {
+            busy = true
+            scope.launch {
+                val r = repository.export(titleId, gameName, target)
+                busy = false
+                r.onSuccess {
+                    note = locale.str(R.string.lib_exported)
                     onToast(note)
-                } else {
-                    pendingImport = pkg
+                }.onFailure {
+                    note = locale.str(R.string.lib_export_failed, failureText(locale, it))
+                    onToast(note)
                 }
-            }))
-        }, modifier = Modifier.weight(1f), enabled = !busy)
-    }
-    Hint(locale.str(R.string.lib_packages_where, packagesDir.absolutePath), size = 11.sp)
-    if (note.isNotEmpty()) Hint(note, size = 11.sp)
-
-    if (packages.isNotEmpty()) {
-        Spacer(Modifier.height(4.dp))
-        Text(locale.str(R.string.lib_section_packages), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-        for (p in packages) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("${p.name}  ·  ${sizeText(p.length())}",
-                     style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
-                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                QuietButton(locale.str(R.string.common_share), onClick = { sharePackage(p) }, enabled = !busy)
-                QuietButton(locale.str(R.string.common_delete), onClick = { pendingDelete = p }, enabled = !busy)
             }
         }
-    }
 
-    if (backups.isNotEmpty()) {
-        Spacer(Modifier.height(4.dp))
-        Text(locale.str(R.string.lib_section_backups), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-        for (b in backups) {
-            val dev = File(b.parentFile, b.name + ".device")
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("${b.name}  ·  ${sizeText(backupSizes[b.absolutePath] ?: 0L)}",
-                     style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
-                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                QuietButton(locale.str(R.string.common_restore), onClick = { pendingRestore = b }, enabled = !busy)
-                QuietButton(locale.str(R.string.common_share), onClick = { shareBackup(b) }, enabled = !busy)
-                QuietButton(locale.str(R.string.common_delete), onClick = { pendingDelete = b }, enabled = !busy)
+        fun doImport(source: SaveSource) {
+            busy = true
+            scope.launch {
+                val r = repository.import(titleId, source)
+                busy = false
+                r.onSuccess {
+                    note = locale.str(R.string.lib_imported)
+                    onToast(note)
+                }.onFailure {
+                    note = locale.str(R.string.lib_import_failed, failureText(locale, it))
+                    onToast(note)
+                }
             }
         }
-    }
 
-    // 游戏还在跑：存档正被它写着，先让它退出
-    if (askClose) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { askClose = false },
-            title = { Text(locale.str(R.string.lib_game_running)) },
-            text = { Text(locale.str(R.string.lib_game_running_hint)) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    askClose = false
-                    actions.onStopGame()
-                }) { Text(locale.str(R.string.drawer_exit), color = NxPalette.Building) }
-            },
-            dismissButton = { androidx.compose.material3.TextButton(onClick = { askClose = false }) { Text(locale.str(R.string.common_cancel)) } },
-        )
-    }
+        // 导出：系统文件管理器（"另存为"）让玩家挑地方，包直接写进去，中间没有放包的地方
+        val exportLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+            if (uri != null) doExport(io.target(uri))
+        }
 
-    pendingImport?.let { pkg ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { pendingImport = null },
-            title = { Text(locale.str(R.string.lib_import_confirm)) },
-            text = { Text(locale.str(R.string.lib_import_confirm_body, pkg.name)) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    pendingImport = null
-                    doImport(pkg)
-                }) { Text(locale.str(R.string.common_import), color = NxPalette.Building) }
-            },
-            dismissButton = { androidx.compose.material3.TextButton(onClick = { pendingImport = null }) { Text(locale.str(R.string.common_cancel)) } },
-        )
-    }
+        // 导入：系统文件管理器让玩家挑一个包（哪儿来的都行）
+        val importLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            val source = io.source(uri)
+            val other = repository.titleIdInPackage(source.name)
+            if (other != null && !other.equals(titleId, ignoreCase = true)) {
+                onToast(locale.str(R.string.lib_other_games_save, other))
+            } else {
+                pendingImport = source
+            }
+        }
 
-    pendingRestore?.let { backup ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { pendingRestore = null },
-            title = { Text(locale.str(R.string.lib_restore_confirm)) },
-            text = { Text(locale.str(R.string.lib_restore_confirm_body, backup.name)) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    pendingRestore = null
-                    doRestore(backup)
-                }) { Text(locale.str(R.string.common_restore), color = NxPalette.Building) }
-            },
-            dismissButton = { androidx.compose.material3.TextButton(onClick = { pendingRestore = null }) { Text(locale.str(R.string.common_cancel)) } },
-        )
-    }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        Text(locale.str(R.string.lib_section_saves), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            QuietButton(locale.str(R.string.lib_export_saves), onClick = {
+                exportLauncher.launch(repository.suggestedPackageName(titleId, gameName))
+            }, modifier = Modifier.weight(1f), enabled = !busy)
+            QuietButton(locale.str(R.string.lib_import_saves), onClick = {
+                importLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+            }, modifier = Modifier.weight(1f), enabled = !busy)
+        }
+        if (note.isNotEmpty()) Hint(note, size = 11.sp)
 
-    pendingDelete?.let { file ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text(locale.str(R.string.lib_delete_confirm)) },
-            text = { Text(locale.str(R.string.lib_delete_confirm_body, file.name)) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    pendingDelete = null
-                    scope.launch {
-                        val gone = repository.delete(file, packSaves)
-                        reload++
-                        onToast(if (gone) locale.str(R.string.lib_deleted, file.name) else locale.str(R.string.lib_delete_failed))
-                    }
-                }) { Text(locale.str(R.string.common_delete), color = NxPalette.Danger) }
-            },
-            dismissButton = { androidx.compose.material3.TextButton(onClick = { pendingDelete = null }) { Text(locale.str(R.string.common_cancel)) } },
-        )
+        // 换进去就是换掉现在的进度：没有备份可退，先问一遍
+        pendingImport?.let { source ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingImport = null },
+                title = { Text(locale.str(R.string.lib_import_confirm)) },
+                text = { Text(locale.str(R.string.lib_import_confirm_body, source.name)) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        pendingImport = null
+                        doImport(source)
+                    }) { Text(locale.str(R.string.common_import), color = NxPalette.Building) }
+                },
+                dismissButton = { androidx.compose.material3.TextButton(onClick = { pendingImport = null }) { Text(locale.str(R.string.common_cancel)) } },
+            )
+        }
     }
-}

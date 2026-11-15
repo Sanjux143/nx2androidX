@@ -70,6 +70,12 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, actions: AppActions, onRequ
                     onPicked = { f -> viewModel.chooseKeys(f.path) }))
             },
             onKeysSkippedChange = { if (it) viewModel.skipKeys() else viewModel.unskipKeys() },
+            firmware = actions.firmware(),
+            onChooseFirmwareFile = {
+                onRequest(PickerRequest(PickerMode.FILE, setOf("zip"), null,
+                    locale.str(R.string.fw_pick),
+                    onPicked = { f -> actions.onImportFirmware(f) }))
+            },
         ),
     )
 }
@@ -84,6 +90,9 @@ internal data class OnboardingActions(
     val onUnpack: () -> Unit,
     val onChooseKeysFile: () -> Unit,
     val onKeysSkippedChange: (Boolean) -> Unit,
+    // 固件（可选）：整机级的一份，导入 zip 解到 App 的私有目录
+    val firmware: String = "",
+    val onChooseFirmwareFile: () -> Unit = {},
 )
 
 /**
@@ -132,7 +141,8 @@ internal fun OnboardingContent(uiState: OnboardingUiState, actions: OnboardingAc
                 when (uiState.step) {
                     ObStep.WELCOME -> WelcomeStep(uiState.facts, actions.onAskStorage, actions.onAskBattery)
                     ObStep.ENV -> EnvStep(uiState, actions.onUnpack)
-                    ObStep.KEYS -> KeysStep(uiState, actions.onChooseKeysFile, actions.onKeysSkippedChange)
+                    ObStep.KEYS -> KeysStep(uiState, actions.onChooseKeysFile, actions.onKeysSkippedChange,
+                        actions.firmware, actions.onChooseFirmwareFile)
                     ObStep.DONE -> DoneStep()
                 }
             }

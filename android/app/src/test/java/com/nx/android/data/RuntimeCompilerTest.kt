@@ -42,6 +42,20 @@ class RuntimeCompilerTest {
         assertEquals("", worked.reason)
     }
 
+    @Test fun `a changed profile is a failure the player can continue from`() {
+        val failed = compile("""{"ev":"profile-drift","msg":"The game profile changed since this pack was built."}
+{"ev":"say","msg":"[RED] The game profile changed since this pack was built."}""", 1)
+        assertFalse(failed.success)
+        assertTrue(failed.profileDrift)
+        val other = compile("""{"ev":"say","msg":"[RED] The Android compiler is unavailable."}""", 1)
+        assertFalse(other.profileDrift)
+    }
+
+    @Test fun `the drift flag reaches the porter only when the player asked for it`() {
+        assertFalse(RuntimeCompiler.args("/packs/Game-data", true).contains("--allow-profile-drift"))
+        assertTrue(RuntimeCompiler.args("/packs/Game-data", true, true).contains("--allow-profile-drift"))
+    }
+
     @Test fun `runtime command follows current frame generation policy without source keys`() {
         assertFalse(RuntimeCompiler.args("/packs/Game-data", false).contains("--no-lsfg"))
         assertFalse(RuntimeCompiler.args("/packs/Game-data", false).contains("-k"))

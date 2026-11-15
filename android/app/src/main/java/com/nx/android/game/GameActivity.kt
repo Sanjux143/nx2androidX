@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.annotation.SuppressLint
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -25,18 +27,24 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -46,7 +54,11 @@ import com.nx.android.R
 import com.nx.android.data.AppLocale
 import com.nx.android.data.FrameGenSettings
 import com.nx.android.data.LosslessDll
+import com.nx.android.data.MotionKnobs
+import com.nx.android.data.MotionSettings
+import com.nx.android.data.PadPlayers
 import com.nx.android.data.PrefsStore
+import com.nx.android.data.hasGyroscope
 import com.nx.android.data.RatePin
 import com.nx.android.data.RateSettings
 import com.nx.android.data.drivers.Drivers
@@ -59,6 +71,12 @@ import com.nx.android.game.input.PadEditor
 import com.nx.android.game.input.PadView
 import com.nx.android.game.overlay.TextPrompt
 import com.nx.android.core.ui.theme.NxTheme
+import com.nx.android.input.GamepadScan
+import com.nx.android.input.PadCalibration
+import com.nx.android.input.PadAssignment
+import com.nx.android.input.PadProfileStore
+import com.nx.android.input.ui.PadCenterController
+import com.nx.android.input.PadSpec
 import org.json.JSONObject
 
 /**
@@ -119,6 +137,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var drawerOpen by mutableStateOf(false)
     private var fgSettings: FrameGenSettings? = null
     private var rateSettings: RateSettings? = null
+    private var motionSettings: MotionSettings? = null
+    private var padPlayers: PadPlayers? = null
     private var packPath: String? = null
     private lateinit var padView: PadView
 
@@ -140,6 +160,11 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private val ctrlDevices = mutableSetOf<Int>()   // 真正发过输入的手柄（发过才算在用）
     private var ctrlListener: InputManager.InputDeviceListener? = null
     private var ctrlCount = -1
+
+    // ---- 手柄中心：每只手柄一份档案（App 侧），映射表推给宿主 ----
+    private lateinit var padController: PadCenterController
+    private var padSupported by mutableStateOf(false)   // 宿主有没有那三个入口（老包没有）
+    private var scanSupported = true   // 宿主带扫描码的那个入口（老包没有）
 
     private fun isGamepad(deviceId: Int): Boolean {
         val d = inputManager.getInputDevice(deviceId) ?: return false
@@ -166,12 +191,49 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     private fun watchControllers() {
         val l = object : InputManager.InputDeviceListener {
-            override fun onInputDeviceAdded(id: Int) { pushControllers() }   // 接上了不算在用：它得先发输入
-            override fun onInputDeviceRemoved(id: Int) { if (ctrlDevices.remove(id)) pushControllers() }
+            override fun onInputDeviceAdded(id: Int) { pushControllers(); pushPadMapping() }   // 接上了不算在用：它得先发输入
+            override fun onInputDeviceRemoved(id: Int) { if (ctrlDevices.remove(id)) pushControllers(); pushPadMapping() }
             override fun onInputDeviceChanged(id: Int) { pushControllers() }
         }
         ctrlListener = l
         runCatching { inputManager.registerInputDeviceListener(l, Handler(Looper.getMainLooper())) }
+    }
+
+    // ---- 手柄中心：档案、映射表与捕获 ----
+
+    /**
+     * 档案读进来（坏了就是空的：回到出厂映射，手柄中心照常能开）。
+     *
+     * 中心在首页与游戏里共用一份状态：这里改的是同一个文件（游戏下次起来读它）。
+     */
+    private fun loadPadProfiles() {
+        padController = PadCenterController(
+            PadProfileStore(java.io.File(filesDir, "pads/${PadProfileStore.FILE_NAME}")),
+            onChanged = { pushPadMapping() },   // 档案改了：新表推给宿主（改完即时生效，不用重启游戏）
+        )
+    }
+
+    /**
+     * 每只手柄的档案推给宿主：它的表按设备寻址，同型号的两只各查各的。
+     * 老包（没有那两个入口）推不动，这一层就当没有手柄中心。
+     */
+    private fun pushPadMapping(): Boolean {
+        val devices = GamepadScan.devices.value
+        // 谁玩谁（这个游戏里哪只手柄是几号玩家）：存的是手柄的指纹，拔了再插还是那个玩家
+        val assignment = padPlayers?.load() ?: PadAssignment()
+        val spec = PadSpec.build(devices.map { info ->
+            val profile = padController.profiles[info.profileKey]
+            PadSpec.Device(
+                deviceId = info.id,
+                labels = profile?.labels ?: false,
+                player = assignment.playerOf(info.profileKey),
+                calibration = profile?.calibration ?: PadCalibration(),
+                bindings = profile?.bindings ?: emptyMap(),
+            )
+        })
+        val ok = runCatching { Native.padMapping(spec) }.isSuccess
+        padSupported = ok
+        return ok
     }
 
     private fun immersive() {
@@ -226,6 +288,11 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         // the title id keeps this game's saves, temp and log apart from the others' (host_start_common)
         fgSettings = titleId?.let { FrameGenSettings(PrefsStore(this), it) }
         rateSettings = titleId?.let { RateSettings(PrefsStore(this), it) }
+        motionSettings = titleId?.let { MotionSettings(PrefsStore(this), it) }
+        padPlayers = titleId?.let { PadPlayers(this, it) }
+        // 手柄的档案（每只手柄一份）与手柄的枚举：中心靠它
+        loadPadProfiles()
+        GamepadScan.start(this)
         // the default driver: a game whose driver was never picked runs on the app's built-in one (the row goes
         // into the pack's env.txt, which the host reads). A driver the player picked is left alone.
         applyDefaultDriver(java.io.File(pack))
@@ -236,7 +303,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         hudFields = HudField.of(prefs.str(PrefsStore.HUD_FIELDS, "").split(",").filter { it.isNotBlank() })
             .ifEmpty { HudField.DEFAULT }
         hudFahrenheit = prefs.bool(PrefsStore.HUD_TEMP_F, false)
-        val env = fgSettings?.load()?.envLines(LosslessDll.ensure(this)?.absolutePath) ?: emptyArray()
+        // 体感的两行也交给宿主：开不开（默认按设备有没有陀螺仪）与保留甩动方向（每个游戏各一份）
+        val env = (fgSettings?.load()?.envLines(LosslessDll.ensure(this)?.absolutePath) ?: emptyArray()) +
+            (motionSettings?.load(hasGyroscope(this))?.envLines() ?: emptyArray())
         if (!Native.start(pack, filesDir.path, titleId, resources.displayMetrics.densityDpi, env, this)) {
             endProcess()   // the save import asked to end: it happens at the next start
             return
@@ -244,6 +313,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         hostRunning = true
         // 手柄的显示与浓淡：App 的偏好是唯一真值，宿主只留运行时的副本（settings.txt 不再写这两项）
         runCatching { Native.padPrefs(padView.shown, padView.opacity) }
+        // 手柄的映射表：每只手柄的档案推给宿主（老包没有那个入口，推不动就算了）
+        pushPadMapping()
         // 玩家选的帧率档位：start 之后才下发——包的 env.txt 在宿主启动时读过，晚 setenv 的那份留下来，
         // 玩家的选择盖过档案自己的 DM_FPS_PIN。没选过就不下发，档案的默认继续说话。
         rateSettings?.load()?.let { pin -> runCatching { Native.perfPinSet(pin.fps) } }
@@ -279,6 +350,16 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private fun saveRatePin(pin: RatePin) {
         rateSettings?.save(pin)
         runCatching { Native.perfPinSet(pin.fps) }
+    }
+
+    /** 宿主现在的体感开关（位 1 = 体感开着，位 2 = 保留甩动方向）：宿主是唯一真源 */
+    private fun motionState(): Int =
+        runCatching { Native.motionGet() }.getOrDefault(0)
+
+    /** 抽屉的操作页：体感瞄准的两个开关（即时下发，顺手记下，下一次启动还是这个） */
+    private fun saveMotion(on: Boolean, raw: Boolean) {
+        motionSettings?.save(MotionKnobs(on, raw))
+        runCatching { Native.motionSet(on, raw) }
     }
 
     /**
@@ -333,6 +414,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     /** the drawer's tree: the HUD, the panel, and the paused overlay (the surface keeps presenting through it) */
     @androidx.compose.runtime.Composable
     private fun DrawerRoot() {
+        // 手柄：接着的设备与它们此刻的输入（中心的面板用）
+        val padDevices by GamepadScan.devices.collectAsState()
         Box(Modifier.fillMaxSize()) {
             if (paused) {
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)).clickable(
@@ -349,7 +432,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 deviceLine = hudDevice,
                 fields = hudFields,
                 fahrenheit = hudFahrenheit,
-                engineLabel = { fgSettings?.load()?.let { "LSFG ${it.mult}x" } },
+                engineLabel = { fgSettings?.load()?.takeIf { it.on }?.let { "LSFG ${it.mult}x" } },
                 chargingText = locale.str(R.string.hud_charging),
                 packPath = packPath,
                 modifier = Modifier.align(Alignment.TopCenter).displayCutoutPadding().padding(top = 8.dp),
@@ -360,6 +443,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 onOpenChange = { drawerOpen = it },
                 settings = fgSettings,
                 onRatePin = { saveRatePin(it) },
+                motion = { motionState() },
+                motionHasGyro = hasGyroscope(this@GameActivity),
+                onMotion = { on, raw -> saveMotion(on, raw) },
                 padShown = { padView.shown },
                 onPadShown = { padView.shown = it },
                 padOpacity = { padView.opacity },
@@ -374,6 +460,13 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 onHudFields = { saveHudFields(it) },
                 hudFahrenheit = { hudFahrenheit },
                 onHudFahrenheit = { saveHudFahrenheit(it) },
+                // 谁玩谁：这个游戏里哪只手柄是几号玩家（存的是手柄的指纹）
+                pads = { GamepadScan.devices.value },
+                players = { padPlayers?.load() ?: PadAssignment() },
+                onPlayers = { assignment ->
+                    padPlayers?.save(assignment)
+                    pushPadMapping()   // 新的表立刻推给宿主：手柄换人，游戏里立刻就是新的玩家
+                },
                 onLayoutEditor = { openEditor() },
                 onResetPadLayout = { resetPadLayout() },
                 // 暂停/继续：游戏原地停/起，抽屉不收——玩家可以一边停着一边调设置
@@ -461,7 +554,19 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         if (e.action == KeyEvent.ACTION_DOWN || e.action == KeyEvent.ACTION_UP) {
             noteController(e.source, e.deviceId)   // 手柄按了键：它算「在用」，虚拟手柄让位
-            Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)
+            // 宿主带扫描码（新的运行时）就用带扫描码的那个入口；老运行时只有旧的那个。
+            // 扫描码是位置（出厂字典按它判），丢了它整套面键就会按 Android 的名字走 —— 所以
+            // 这里以「真的发不出去」为准，不靠上面那个标志：标志掉了也照样先试带扫描码的那个。
+            if (scanSupported) {
+                try {
+                    Native.keyScan(e.deviceId, e.source, e.keyCode, e.scanCode, e.action, e.metaState, e.repeatCount)
+                } catch (t: Throwable) {
+                    scanSupported = false   // 老运行时：没有那个入口
+                    Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)
+                }
+            } else {
+                Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)
+            }
         }
         return true
     }
@@ -471,7 +576,16 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         runCatching { Native.menuState().substringBefore(' ').toIntOrNull() ?: -1 }.getOrDefault(-1) != -1
 
     // ---- lifecycle: the same dance as the NativeActivity's callbacks ----
-    override fun onResume() { super.onResume(); Native.lifecycle(1); padView.fetchLayout() }
+    override fun onResume() {
+        super.onResume()
+        Native.lifecycle(1)
+        padView.fetchLayout()
+        // 玩家可能刚在首页改过手柄的档案：重读一遍，再推给宿主
+        if (::padController.isInitialized) {
+            padController.reload()
+            pushPadMapping()
+        }
+    }
 
     /** The phone's language changed (configChanges holds it): the app's words are read again */
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {

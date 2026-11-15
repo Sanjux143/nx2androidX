@@ -2,22 +2,28 @@ package com.nx.android.data.saves
 
 import com.nx.android.data.SaveBackup
 import com.nx.android.domain.saves.SaveOperationException
-import kotlinx.coroutines.Dispatchers
+import com.nx.android.domain.saves.SaveSource
+import com.nx.android.domain.saves.SaveTarget
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.file.Files
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class SaveRepositoryImplTest {
     @Test
-    fun `import backs up current save before installing package`() = runBlocking {
+    fun `an imported package replaces the live save`() = runBlocking {
         val fixture = Fixture()
         try {
             val live = SaveBackup.liveDir(fixture.platform.filesDir, TITLE_ID)
@@ -25,11 +31,50 @@ class SaveRepositoryImplTest {
             File(live, "slot.dat").writeText("current")
             val packageFile = fixture.packageFor(TITLE_ID, "slot.dat" to "imported")
 
-            val result = fixture.repository.import(TITLE_ID, packageFile, fixture.packSaves)
+            val result = fixture.repository.import(TITLE_ID, fixture.source(packageFile))
 
             assertTrue(result.isSuccess)
             assertEquals("imported", File(live, "slot.dat").readText())
-            assertEquals("current", File(fixture.packSaves, result.getOrThrow()!!).resolve("slot.dat").readText())
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun `an exported package can be imported back`() = runBlocking {
+        val fixture = Fixture()
+        try {
+            val live = SaveBackup.liveDir(fixture.platform.filesDir, TITLE_ID)
+            live.mkdirs()
+            File(live, "slot.dat").writeText("progress")
+            val target = CollectingTarget()
+
+            val exported = fixture.repository.export(TITLE_ID, "game", target)
+
+            assertTrue(exported.isSuccess)
+            val name = fixture.repository.suggestedPackageName(TITLE_ID, "game")
+            assertTrue(name, name.endsWith(".zip"))
+            assertEquals(TITLE_ID, fixture.repository.titleIdInPackage(name))
+            File(live, "slot.dat").writeText("something else")
+            val imported = fixture.repository.import(TITLE_ID, fixture.source(name, target.bytes()))
+
+            assertTrue(imported.isSuccess)
+            assertEquals("progress", File(live, "slot.dat").readText())
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun `a game without a save has nothing to export`() = runBlocking {
+        val fixture = Fixture()
+        try {
+            SaveBackup.liveDir(fixture.platform.filesDir, TITLE_ID).mkdirs()
+
+            val result = fixture.repository.export(TITLE_ID, "game", CollectingTarget())
+
+            assertEquals(SaveOperationException.Reason.NO_SAVES,
+                (result.exceptionOrNull() as SaveOperationException).reason)
         } finally {
             fixture.close()
         }
@@ -43,7 +88,7 @@ class SaveRepositoryImplTest {
             live.mkdirs()
             File(live, "slot.dat").writeText("keep")
             val wrongTitle = fixture.packageFor(OTHER_TITLE_ID, "slot.dat" to "wrong")
-            val wrongResult = fixture.repository.import(TITLE_ID, wrongTitle, fixture.packSaves)
+            val wrongResult = fixture.repository.import(TITLE_ID, fixture.source(wrongTitle))
             assertTrue(wrongResult.exceptionOrNull() is SaveOperationException)
             assertEquals(SaveOperationException.Reason.TITLE_MISMATCH,
                 (wrongResult.exceptionOrNull() as SaveOperationException).reason)
@@ -55,7 +100,7 @@ class SaveRepositoryImplTest {
                 zip.write("bad".toByteArray())
                 zip.closeEntry()
             }
-            val traversalResult = fixture.repository.import(TITLE_ID, traversal, fixture.packSaves)
+            val traversalResult = fixture.repository.import(TITLE_ID, fixture.source(traversal))
             assertTrue(traversalResult.exceptionOrNull() is SaveBackup.Refused)
             assertFalse(fixture.root.resolve("Downloads/escape.txt").exists())
             assertEquals("keep", File(live, "slot.dat").readText())
@@ -71,49 +116,25 @@ class SaveRepositoryImplTest {
             val live = SaveBackup.liveDir(fixture.platform.filesDir, TITLE_ID)
             live.mkdirs()
             File(live, "slot.dat").writeText("keep")
-            val broken = fixture.platform.packagesDirectory().resolve("game-$TITLE_ID-20261112-120000.zip")
+            val broken = fixture.root.resolve("game-$TITLE_ID-20261112-120000.zip")
             broken.writeText("this is not a zip archive")
 
-            val result = fixture.repository.import(TITLE_ID, broken, fixture.packSaves)
+            val result = fixture.repository.import(TITLE_ID, fixture.source(broken))
 
             assertTrue(result.exceptionOrNull() is SaveBackup.Refused)
             assertEquals("keep", File(live, "slot.dat").readText())
-            assertTrue("nothing was backed up", fixture.packSaves.listFiles().orEmpty().isEmpty())
         } finally {
             fixture.close()
         }
     }
 
     @Test
-    fun `running game and invalid title id prevent save access`() = runBlocking {
+    fun `an invalid title id prevents save access`() = runBlocking {
         val fixture = Fixture()
         try {
-            fixture.platform.running = true
-            val running = fixture.repository.export(TITLE_ID, "game", fixture.packSaves)
-            assertEquals(SaveOperationException.Reason.GAME_RUNNING,
-                (running.exceptionOrNull() as SaveOperationException).reason)
-            fixture.platform.running = false
-            val invalid = fixture.repository.export("../escape", "game", fixture.packSaves)
+            val invalid = fixture.repository.export("../escape", "game", CollectingTarget())
             assertEquals(SaveOperationException.Reason.INVALID_TITLE_ID,
                 (invalid.exceptionOrNull() as SaveOperationException).reason)
-            assertTrue(fixture.repository.listPackages().isEmpty())
-        } finally {
-            fixture.close()
-        }
-    }
-
-    @Test
-    fun `restore only accepts a backup inside this pack save directory`() = runBlocking {
-        val fixture = Fixture()
-        try {
-            val external = fixture.root.resolve("outside/backup")
-            external.mkdirs()
-            File(external, "slot.dat").writeText("outside")
-
-            val result = fixture.repository.restore(TITLE_ID, external, fixture.packSaves)
-
-            assertEquals(SaveOperationException.Reason.INVALID_BACKUP,
-                (result.exceptionOrNull() as SaveOperationException).reason)
         } finally {
             fixture.close()
         }
@@ -137,7 +158,7 @@ class SaveRepositoryImplTest {
                 }
             }
             val repository = SaveRepositoryImpl(fixture.platform, Dispatchers.Unconfined, swap)
-            val job = async { repository.import(TITLE_ID, packageFile, fixture.packSaves) }
+            val job = async { repository.import(TITLE_ID, fixture.source(packageFile)) }
 
             enteredSwap.await()
             job.cancel()
@@ -146,7 +167,6 @@ class SaveRepositoryImplTest {
 
             assertTrue(job.isCancelled)
             assertEquals("imported", File(live, "slot.dat").readText())
-            assertTrue(fixture.packSaves.listFiles().orEmpty().any { it.name.endsWith("-before-import") })
         } finally {
             fixture.close()
         }
@@ -155,28 +175,38 @@ class SaveRepositoryImplTest {
     private class Fixture : AutoCloseable {
         val root = Files.createTempDirectory("nx2a-save-repo").toFile()
         val platform = FakeSavePlatform(root)
-        val packSaves = root.resolve("pack/saves")
         val repository = SaveRepositoryImpl(platform, Dispatchers.Unconfined, FileSaveSwap())
 
         fun packageFor(titleId: String, entry: Pair<String, String>): File {
             val tree = root.resolve("source-${titleId}")
             tree.mkdirs()
             File(tree, entry.first).writeText(entry.second)
-            val dest = File(platform.packagesDirectory(), "game-$titleId-20261112-120000.zip")
-            SaveBackup.writePackage(tree, null, tree.name, dest)
+            val dest = root.resolve("game-$titleId-20261112-120000.zip")
+            SaveBackup.writePackage(tree, null, tree.name, dest.outputStream())
             return dest
+        }
+
+        /** the package as the file manager hands it over: a name and a stream */
+        fun source(file: File): SaveSource = source(file.name, file.readBytes())
+
+        fun source(name: String, bytes: ByteArray): SaveSource = object : SaveSource {
+            override val name: String = name
+            override fun open(): InputStream = ByteArrayInputStream(bytes)
         }
 
         override fun close() { root.deleteRecursively() }
     }
 
+    /** the place the player picked in the file manager: the bytes land here */
+    private class CollectingTarget : SaveTarget {
+        private val buffer = ByteArrayOutputStream()
+        override fun open(): OutputStream = buffer
+        fun bytes(): ByteArray = buffer.toByteArray()
+    }
+
     private class FakeSavePlatform(private val root: File) : SavePlatform {
         override val filesDir: File = File(root, "files")
         override val cacheDir: File = File(root, "cache")
-        private val packages = File(root, "Downloads/nx2android")
-        var running = false
-        override fun packagesDirectory(): File = packages.apply { mkdirs() }
-        override fun isGameRunning(): Boolean = running
     }
 
     private companion object {

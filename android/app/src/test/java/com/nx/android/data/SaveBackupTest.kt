@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.file.Files
 import java.util.zip.ZipEntry
@@ -25,6 +26,13 @@ class SaveBackupTest {
         dir.mkdirs()
         File(dir, name).writeText(body)
         return dir
+    }
+
+    /** the package as a stream of bytes (the file manager gives it as a stream) */
+    private fun pack(main: File?, device: File?, treeName: String): ByteArray {
+        val out = ByteArrayOutputStream()
+        SaveBackup.writePackage(main, device, treeName, out)
+        return out.toByteArray()
     }
 
     @Test
@@ -61,12 +69,9 @@ class SaveBackupTest {
         device.mkdirs()
         File(device, "island.dat").writeText("device")
 
-        val dest = File(tmp("out"), "pkg.zip")
-        val written = SaveBackup.export(live, device, dest)
-        assertNotNull(written)
-        assertTrue(dest.isFile)
+        val bytes = pack(live, device, "pkg")
 
-        val unpacked = SaveBackup.unpack(dest, tmp("unpacked"))
+        val unpacked = SaveBackup.unpack(bytes.inputStream(), tmp("unpacked"))
         assertEquals("pkg", unpacked.tree.name)     // the tree in the package is named after the package
         assertEquals("progress", File(unpacked.tree, "slot0.dat").readText())
         assertEquals("more", File(unpacked.tree, "sub/other.dat").readText())
@@ -75,26 +80,16 @@ class SaveBackupTest {
     }
 
     @Test
-    fun twoPackagesInTheSameSecondDoNotShareAName() {
-        val internal = tmp("internal")
-        val live = liveSave(internal, "0100000000010000", "slot0.dat", "progress")
-        val out = tmp("out")
-        val first = SaveBackup.export(live, null, File(out, "game-0100000000010000-20261109-153012.zip"))
-        val second = SaveBackup.export(live, null, File(out, "game-0100000000010000-20261109-153012.zip"))
-        assertNotNull(first)
-        assertNotNull(second)
-        assertTrue(first!!.name != second!!.name)
-        assertTrue(second.isFile)
-    }
-
-    @Test
     fun aGameWithoutASaveHasNoPackage() {
         val internal = tmp("internal")
         SaveBackup.liveDir(internal, "0100000000010000").mkdirs()
-        val dest = File(tmp("out"), "pkg.zip")
-        assertNull(SaveBackup.export(SaveBackup.liveDir(internal, "0100000000010000"),
-            SaveBackup.deviceDir(internal, "0100000000010000"), dest))
-        assertTrue(!dest.exists())
+
+        val out = ByteArrayOutputStream()
+        val written = SaveBackup.export(SaveBackup.liveDir(internal, "0100000000010000"),
+            SaveBackup.deviceDir(internal, "0100000000010000"), "pkg", out)
+
+        assertFalse(written)
+        assertEquals(0, out.size())
     }
 
     @Test
@@ -106,7 +101,7 @@ class SaveBackupTest {
             zip.closeEntry()
         }
         try {
-            SaveBackup.unpack(pkg, tmp("unpacked"))
+            pkg.inputStream().use { SaveBackup.unpack(it, tmp("unpacked")) }
             fail("a package that writes out of the folder has to be refused")
         } catch (e: Exception) {
             // the refusal carries a code, not a sentence: the app's words for it live in its own resources
@@ -121,7 +116,7 @@ class SaveBackupTest {
         val pkg = File(tmp("out"), "broken.zip")
         pkg.writeText("this is not a zip archive")
         try {
-            SaveBackup.unpack(pkg, tmp("unpacked"))
+            pkg.inputStream().use { SaveBackup.unpack(it, tmp("unpacked")) }
             fail("a file that is not an archive has to be refused")
         } catch (e: Exception) {
             assertTrue(e.message ?: "", e is SaveBackup.Refused)
@@ -138,7 +133,7 @@ class SaveBackupTest {
             zip.closeEntry()
         }
         try {
-            SaveBackup.unpack(pkg, tmp("unpacked"))
+            pkg.inputStream().use { SaveBackup.unpack(it, tmp("unpacked")) }
             fail("an archive without a save has to be refused")
         } catch (e: Exception) {
             assertTrue(e.message ?: "", e is SaveBackup.Refused)
@@ -148,15 +143,9 @@ class SaveBackupTest {
     }
 
     @Test
-    fun theSaveAnImportReplacesIsKept() {
+    fun theSaveAnImportReplacesIsSwappedIn() {
         val internal = tmp("internal")
         val live = liveSave(internal, "0100000000010000", "slot0.dat", "old progress")
-        val packSaves = File(tmp("pack"), "saves")
-
-        val backup = SaveBackup.backup(live, null, packSaves, "20261109-153012")
-        assertNotNull(backup)
-        assertEquals("20261109-153012-before-import", backup!!.name)
-        assertEquals("old progress", File(backup, "slot0.dat").readText())
 
         // the new save takes the place, the old one is gone
         val fresh = tmp("fresh")

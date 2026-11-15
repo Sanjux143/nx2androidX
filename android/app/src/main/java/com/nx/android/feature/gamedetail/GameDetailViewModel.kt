@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.nx.android.data.saves.SaveIo
 import com.nx.android.domain.saves.SaveRepository
 import com.nx.android.domain.playback.RunOptionsRepository
 import com.nx.android.domain.playback.RunOptionsSnapshot
@@ -26,6 +27,7 @@ data class GameDetailUiState(
 class GameDetailViewModel @Inject constructor(
     private val savedStateHandle: SavedStateHandle,
     val saveRepository: SaveRepository,
+    val saveIo: SaveIo,
     private val runOptionsRepository: RunOptionsRepository,
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(

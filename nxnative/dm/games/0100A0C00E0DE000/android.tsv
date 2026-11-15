@@ -16,4 +16,5 @@ status	playable
 tested	v0 Retroid Pocket 6 (QCS8550, Adreno 740, Android 13); PurpleVK-public git-62ac221a33
 package	org.nx2a.t0100a0c00e0de000
 orientation	landscape
+graphics	nvn
 env	DM_VK_MT_REPLAY=1

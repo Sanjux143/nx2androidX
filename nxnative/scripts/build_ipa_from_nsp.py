@@ -506,13 +506,14 @@ def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None, base=None):
         else: f['dlc'].append((tid, version_of(p), p))
         return app
 
-    for p in sorted(p for e in exts for p in nsp_dir.glob(f'*.{e}')):   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
+    # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition. The suffix case is accepted on every host; a directory named *.nsp is not a dump
+    for p in sorted(p for p in nsp_dir.glob('*') if p.is_file() and p.suffix.lower()[1:] in exts):
         take(p)
     # the updates and the DLC often sit in a subfolder next to the base (a download's layout: 本体加补丁/1DLC/): one level, and only the picked game's files
     ours = want if want is not None else (next(iter(fams)) if len(fams) == 1 else None)
     if ours is not None and nsp_dir.is_dir():
         for d in sorted(x for x in nsp_dir.iterdir() if x.is_dir()):
-            for p in sorted(p for e in exts for p in d.glob(f'*.{e}')):
+            for p in sorted(p for p in d.glob('*') if p.is_file() and p.suffix.lower()[1:] in exts):
                 if p.stat().st_size == 0: say(f'skipping an empty file: {p.name}'); continue
                 tid = title_of(p, hk)
                 if tid is None or _app_of_tid(tid) != ours: continue   # another game's file (or an unreadable one): left out
@@ -829,6 +830,20 @@ def chain_files(repo):   # what the iOS shaders run: dmsh_build.py and every rep
             mods = [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module] if isinstance(n, ast.ImportFrom) and n.module else []
             todo += [d / f'{m.split(".")[0]}.py' for m in mods for d in dirs]
     return sorted(seen) + [repo / 'dm/gfx/tools/dmsh_chain.lock']
+
+
+def vulkan_files(repo):   # what the Vulkan translation runs: the translator (dm/android/tools/shader_vk.py), the bundle's writer (dmsv.py) and every repository module they import, at any
+    # depth (dmsh_facts.py, dmsh_chain.py, shader_stage.py, game.py); not the split's readers (shader_split.py, unityfs.py, uepak.py), whose changes leave the bundle as it is. A key
+    # over all of dm/gfx/tools made a change to the split cost the translation again (FINAL FANTASY RESONANCE: 73,512 shaders, 40 minutes)
+    dirs, todo, seen = [repo / d for d in ('dm/android/tools', 'dm/gfx/tools', 'dm/games')], [repo / 'dm/android/tools/shader_vk.py', repo / 'dm/android/tools/dmsv.py', repo / 'dm/android/tools/shader_products.py'], set()
+    while todo:
+        p = todo.pop()
+        if p in seen or not p.is_file(): continue
+        seen.add(p)
+        for n in ast.walk(ast.parse(p.read_bytes())):
+            mods = [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module] if isinstance(n, ast.ImportFrom) and n.module else []
+            todo += [d / f'{m.split(".")[0]}.py' for m in mods for d in dirs]
+    return sorted(seen)
 
 
 def package_key(pkg):   # the shader package's content (file names and bytes): what the iOS shaders are built from

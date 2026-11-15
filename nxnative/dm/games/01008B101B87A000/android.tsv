@@ -10,6 +10,7 @@ status	playable
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.fm24touch
 orientation	landscape
+graphics	gl
 setting	docked=0
 setting	overlay=0
 setting	rumble=1

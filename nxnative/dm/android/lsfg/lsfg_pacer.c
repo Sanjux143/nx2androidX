@@ -1,11 +1,20 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// SPDX-FileCopyrightText: Copyright 2025 lsfg-vk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Ported to C for Banana Native from Eden's src/video_core/renderer_vulkan/present/frame_gen_pacer.cpp: how many frames to generate for each game frame. With a fixed
 // multiplier, multiplier - 1 once the game's frame rate is steady; with a target rate, as many as hold that output rate, probing one more at a time and rolling a step back
-// when it lowers the game's own rate. The floor (min_base, DM_LSFG_MIN_FPS) holds the generation back when the game's own rate falls under it: the generation's work
-// must not slow the game down (a game natively slower than the floor keeps its frames: the unloaded rate is what says the generation is the cause).
-// Times are seconds on CLOCK_MONOTONIC (0 = unset)
+// when it lowers the game's own rate. Times are seconds on CLOCK_MONOTONIC (0 = unset)
+//
+// The floor (min_base, DM_LSFG_MIN_FPS) is the game's own rate: the generation's work must not push it under the floor. A decoupled game (its speed follows its
+// measured rate) is judged by the floor alone; a game held by a limiter (every game here) also needs the reference (unloaded_base_rate, the rate without the
+// generation) to say that the generation is the cause.
+//
+// The multiplier mode has no probing, so the judgement sits in the plan itself, and it waits a second before it holds the generation back (then it backs off):
+// the game's rate sits right on the floor when a limiter holds it there, and stopping on the first frame under it made the generation flap on and off. The
+// reference is frozen while the rate is under the floor, or it would follow the game down and release the guard exactly when it is needed.
 #include "lsfg.h"
 #include <math.h>
 #include <string.h>
@@ -52,7 +61,11 @@ static void update_limit(lsfg_pacer *p, double now, float base_rate, float targe
         float current_output = fmin_(target_rate, base_rate * (float)(p->limit + 1));
         int throughput_regressed = current_output < previous_output * PROBE_THROUGHPUT_TOLERANCE;
         int collapsed_for_marginal_gain = base_rate < p->probe_base_rate * PROBE_BASE_COLLAPSE_RATIO && current_output < previous_output * PROBE_MARGINAL_GAIN;
-        int emulation_slowed = p->unloaded_base_rate > 0 && base_rate < p->unloaded_base_rate * UNLOADED_BASE_RETENTION;
+        // A base slowed by the generation's own GPU work is a loss where the game locks to 60 / 30 (or would run slower). A decoupled game keeps its speed at any
+        // rate and uses the whole GPU, so any generation slows it: there the probe is kept while the game stays at min_base or more (DM_LSFG_MIN_FPS) (its controls
+        // answer at the base rate) and shows more frames (the two checks above)
+        int emulation_slowed = p->decoupled ? base_rate < p->min_base
+                                            : p->unloaded_base_rate > 0 && base_rate < p->unloaded_base_rate * UNLOADED_BASE_RETENTION;
         if (throughput_regressed || collapsed_for_marginal_gain || emulation_slowed) {
             p->limit = p->probe_previous_limit;
             p->probe_failures = p->probe_failures + 1 < MAX_PROBE_FAILURES ? p->probe_failures + 1 : MAX_PROBE_FAILURES;
@@ -63,6 +76,18 @@ static void update_limit(lsfg_pacer *p, double now, float base_rate, float targe
         p->probe_failures = 0;
         p->next_probe = now + PROBE_STEP_DELAY;
     }
+    // Decoupled: a scene that grows heavier after a probe was kept (a menu at 60 fps, then the level) can push the base under the floor with the generations in place;
+    // probes only ever add, so a generation is taken back once the base stayed under it for DEFICIT_DURATION, and the next probe waits as after a failed one
+    if (p->decoupled && p->limit > 0 && base_rate < p->min_base) {
+        if (!p->below_since) p->below_since = now;
+        else if (now - p->below_since >= DEFICIT_DURATION) {
+            p->limit--; p->below_since = 0; p->deficit_since = 0; p->output_credit = 0;
+            p->probe_failures = p->probe_failures + 1 < MAX_PROBE_FAILURES ? p->probe_failures + 1 : MAX_PROBE_FAILURES;
+            p->next_probe = now + probe_backoff(p->probe_failures);
+        }
+        return;
+    }
+    p->below_since = 0;
     if (base_rate * (float)(p->limit + 1) >= target_rate * TARGET_SATISFIED_RATIO || p->limit >= ceiling) { p->deficit_since = 0; return; }
     if (!p->deficit_since) { p->deficit_since = now; return; }
     if (now - p->deficit_since < DEFICIT_DURATION) return;
@@ -94,8 +119,8 @@ lsfg_plan lsfg_pacer_plan(lsfg_pacer *p, size_t capacity, int multiplier, int ta
     p->smoothed_interval = p->smoothed_interval > 0 ? p->smoothed_interval + (interval - p->smoothed_interval) * INTERVAL_SMOOTHING : interval;
     if (!previous_generations) {
         float measured = 1.0f / p->smoothed_interval;
-        // A rate under the floor is the generation's own doing: the reference (what the game does without the generation) stays where it was, or the floor would
-        // release itself exactly when it is needed
+        // A rate under the floor is the generation's own doing: the reference (what the game does without the generation) stays where it was, or the
+        // guard would release itself exactly when it is needed (the reference follows the game down and the generation starts again)
         if (p->min_base <= 0 || measured >= p->min_base)
             p->unloaded_base_rate = p->unloaded_base_rate > 0 ? p->unloaded_base_rate + (measured - p->unloaded_base_rate) * INTERVAL_SMOOTHING : measured;
     }
@@ -103,20 +128,6 @@ lsfg_plan lsfg_pacer_plan(lsfg_pacer *p, size_t capacity, int multiplier, int ta
         if (now < p->stable_until) return none;
         p->stable_until = 0;
     }
-    // The floor (DM_LSFG_MIN_FPS): the generation's own work must not push the game under it. The unloaded rate says what the game does without the
-    // generation: a game that is natively slower than the floor is not the generation's doing and keeps its frames.
-    float base = 1.0f / p->smoothed_interval;
-    if (p->min_base > 0 && p->limit > 0 && base < p->min_base && p->unloaded_base_rate > p->min_base) {
-        if (!p->below_since) p->below_since = now;
-        else if (now - p->below_since >= DEFICIT_DURATION) {
-            p->limit--; p->below_since = 0; p->deficit_since = 0; p->output_credit = 0;
-            p->probe_failures = p->probe_failures + 1 < MAX_PROBE_FAILURES ? p->probe_failures + 1 : MAX_PROBE_FAILURES;
-            p->next_probe = now + probe_backoff(p->probe_failures);   // the game needs a while at its own rate before the generation tries again
-        }
-        p->output_credit = 0; p->issued = 0;
-        return none;   // under the floor: no generation, the game runs at its own rate
-    }
-    p->below_since = 0;
     // A change of the mode (the multiplier to a target rate, or back) starts the plan afresh: the limit the multiplier mode left behind is not the target
     // mode's limit, and it would keep generating past the target (the drawer's live switch changes it while the game runs)
     if (p->mode_target != target_rate) {
@@ -124,12 +135,29 @@ lsfg_plan lsfg_pacer_plan(lsfg_pacer *p, size_t capacity, int multiplier, int ta
         p->limit = 0; p->output_credit = 0; p->deficit_since = 0; p->probe_failures = 0; p->next_probe = 0; p->below_since = 0;
     }
     if (!target_rate) {
-        if (p->next_probe && now < p->next_probe) { p->output_credit = 0; return none; }   // the floor's back-off
+        // The multiplier mode has no probing, so the generation's own cost is judged here: the game must keep the floor (DM_LSFG_MIN_FPS) — its own
+        // rate may not fall under it because of the generation. A decoupled game has the floor alone (its speed follows the rate, so the floor is all
+        // that says it); a game held by a limiter also needs the reference to say the generation is the cause (the rate without the generation).
+        // A second under it holds the generation back (the game keeps its frames) and the back-off keeps it from trying again for a while. The second
+        // of patience is the point: the game's rate sits right on the floor when a limiter holds it there, and stopping on the first frame under it
+        // made the generation flap on and off.
+        float base = 1.0f / p->smoothed_interval;
+        int slowed = p->decoupled ? base < p->min_base
+                                  : (p->min_base > 0 && base < p->min_base && p->unloaded_base_rate > p->min_base);
+        if (slowed) {
+            if (!p->below_since) p->below_since = now;
+            else if (now - p->below_since >= DEFICIT_DURATION) {
+                p->probe_failures = p->probe_failures + 1 < MAX_PROBE_FAILURES ? p->probe_failures + 1 : MAX_PROBE_FAILURES;
+                p->next_probe = now + probe_backoff(p->probe_failures);
+                p->below_since = 0;
+            }
+            if (p->next_probe && now < p->next_probe) { p->output_credit = 0; p->issued = 0; return none; }
+        } else p->below_since = 0;
         p->limit = zmin((size_t)(multiplier - 1), ceiling);   // Settings::FrameGenGenerations
         p->output_credit = 0; p->issued = p->limit;
         return (lsfg_plan){p->limit, p->limit > 0};
     }
-    update_limit(p, now, base, target, ceiling);
+    update_limit(p, now, 1.0f / p->smoothed_interval, target, ceiling);
     size_t allowed = zmin(p->limit, ceiling);
     float desired_outputs = p->smoothed_interval * target;
     if (!allowed || desired_outputs <= 1.0f) { p->output_credit = 0; return none; }

@@ -11,3 +11,4 @@ tested	v65536 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.kirbyandtheforgottenland
 orientation	landscape
 requires	bcn
+graphics	nvn

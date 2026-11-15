@@ -52,6 +52,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -60,11 +64,16 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nx.android.R
+import com.nx.android.input.GamepadScan
+import com.nx.android.input.ui.PadCenterController
+import com.nx.android.input.PadAssignment
+import com.nx.android.input.ui.PadCenterScreen
 import com.nx.android.appstate.PortState
 import com.nx.android.appstate.PlayerState
 import com.nx.android.appstate.OnboardingState
 import com.nx.android.data.AppLocale
 import com.nx.android.data.PrefsStore
+import com.nx.android.data.PadPlayers
 import com.nx.android.data.StorageVolumes
 import com.nx.android.domain.EnvCheck
 import com.nx.android.domain.GameIdentity
@@ -72,6 +81,8 @@ import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.domain.GameConfig
 import com.nx.android.feature.builds.BuildsRoute
 import com.nx.android.feature.builds.BuildsViewModel
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.components.CapsuleButton
 import com.nx.android.core.ui.elapsedSecs
 import com.nx.android.core.ui.ProvideAppLocale
@@ -118,6 +129,14 @@ enum class Tab(@StringRes val label: Int, val icon: ImageVector) {
     BUILDS(R.string.app_tab_builds, Icons.Filled.Inventory2),
 }
 
+/**
+ * 手柄导航现在归谁：谁在最上面，谁拿走手柄。
+ *
+ * 判断只在这一处做（页面的根），页面自己只管「我收到这个动作时做什么」——
+ * 这样不会出现两个页面同时响应，也不会要动一处就想起另一处。
+ */
+private enum class NavHost { NONE, LIBRARY, PANEL, SETTINGS }
+
 /** The screens' way back to the activity's own privileges: what they may ask for, nothing else */
 data class AppActions(
     val onAskStorage: () -> Unit,
@@ -141,6 +160,10 @@ data class AppActions(
     val emptyBuildLogMessage: (String) -> String,
     val titleBuildLog: (String) -> String,
     val onUpdateRuntime: (File, String) -> Unit = { _, _ -> },
+    // the firmware: one for the machine (imported from a zip into the app's own folder, optional)
+    val firmware: () -> String = { "" },
+    val onImportFirmware: (File) -> Unit = {},
+    val onClearFirmware: () -> Unit = {},
 )
 
 /** The app's root: the guided setup until it is done, the main shell after */
@@ -165,6 +188,9 @@ fun AppRoot(
     startTab: Int,
     runtime: com.nx.android.appstate.RuntimeUpdateState,
     launchBuildId: String,
+    padController: PadCenterController,
+    padCenterOpen: Boolean,
+    onPadCenter: (Boolean) -> Unit,
 ) {
     NxTheme {
         // 界面语言：整棵树读同一份资源，玩家在设置里换语言时这里跟着换
@@ -189,7 +215,14 @@ fun AppRoot(
             if (onboardingUiState.active) {
                 OnboardingScreen(onboardingViewModel, actions) { pickerReq = it }
             } else {
+                // 这一层之外还盖着东西吗（文件选择器、驱动页、日志、清单、开源声明）：
+                // 盖着的时候手柄的键不落到里面的页面上
+                val outerOverlayOpen = pickerReq != null || driversOpen || logOpen ||
+                    buildLogId.isNotEmpty() || envCheckOpen || ossNotice
                 MainScreen(prefs, locale, port, library, player, onboarding, drivers, environmentSetup, actions, startTab, runtime, launchBuildId,
+                    padController = padController,
+                    padCenterOpen = padCenterOpen, onPadCenter = onPadCenter,
+                    outerOverlayOpen = outerOverlayOpen,
                     onRequest = { pickerReq = it },
                     onDrivers = { driversOpen = true },
                     onLog = { id -> buildLogId = id },
@@ -252,6 +285,13 @@ fun AppRoot(
                         pickerReq = PickerRequest(PickerMode.FILE, emptySet(), null,
                             locale.str(R.string.onb_choose_prod_keys),
                             onPicked = { f -> actions.onSetKeys(f.path) })
+                    },
+                    firmware = actions.firmware(),
+                    onImportFirmware = {
+                        envCheckOpen = false
+                        pickerReq = PickerRequest(PickerMode.FILE, setOf("zip"), null,
+                            locale.str(R.string.fw_pick),
+                            onPicked = { f -> actions.onImportFirmware(f) })
                     },
                     onRunOnboarding = {
                         // the checklist first: it is drawn over the setup and would hide it
@@ -330,6 +370,10 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
                environmentSetup: EnvironmentSetup, actions: AppActions, startTab: Int,
                runtime: com.nx.android.appstate.RuntimeUpdateState,
                launchBuildId: String,
+               padController: PadCenterController,
+               padCenterOpen: Boolean,
+               onPadCenter: (Boolean) -> Unit,
+               outerOverlayOpen: Boolean = false,
                onRequest: (PickerRequest) -> Unit,
                onDrivers: () -> Unit,
                onLog: (String) -> Unit,
@@ -339,7 +383,28 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
     // 设置是一整页，盖住顶栏与下面的页面：从顶栏的设置图标进来，关掉才回到底下的页面
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsSection by remember { mutableStateOf(SettingsSection.ENVIRONMENT) }
+    // 手柄中心：从顶栏的手柄按钮进来，盖住整屏（跟设置页一样）。开着不开着是活动那边
+    // 的一份（分发层也要知道：手柄的键该进中心还是进页面）
+    val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
+    val padCtx = androidx.compose.ui.platform.LocalContext.current
     val lib = library
+    // 手柄导航归谁：谁在最上面，谁拿走手柄。
+    // 手柄中心开着的时候，手柄的键进中心（活动层就不发了），外面还盖着东西的时候也一样。
+    val navHost = when {
+        outerOverlayOpen || padCenterOpen -> NavHost.NONE
+        settingsOpen -> NavHost.SETTINGS
+        lib.selected != null -> NavHost.PANEL
+        else -> NavHost.LIBRARY
+    }
+
+    // 肩键切页签：页签的状态在这一层，所以切页也在这里做（浮层开着时不切）。
+    OnNavKey(enabled = navHost == NavHost.LIBRARY) { key ->
+        when (key) {
+            NavKey.TabLeft -> tab = Tab.LIBRARY.ordinal
+            NavKey.TabRight -> tab = Tab.BUILDS.ordinal
+            else -> {}
+        }
+    }
     val libraryViewModel: LibraryViewModel = hiltViewModel()
     val buildsViewModel: BuildsViewModel = hiltViewModel()
     LaunchedEffect(launchBuildId) {
@@ -357,25 +422,10 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
     com.nx.android.feature.runtime.RuntimeUpdateDialog(runtime,
         onRetry = { actions.onUpdateRuntime(File(runtime.pack), runtime.name) },
         onFinished = { actions.onToast(locale.str(R.string.runtime_updated)) },
-        onRePort = {
-            val pack = File(runtime.pack)
-            val entry = lib.visible().firstOrNull { it.pack?.pack == pack }
-            val titleId = entry?.titleId ?: com.nx.android.data.library.LibraryFileScanner.portFromPack(pack)?.titleId
-            runtime.dismiss()
-            fun choose(file: File) {
-                if (titleId != null && !com.nx.android.domain.LibraryLogic.sourceMatchesTitle(file.name, titleId)) {
-                    actions.onToast(locale.str(R.string.lib_source_mismatch))
-                } else {
-                    lib.buildsTarget = file
-                    lib.selected = null
-                    buildsViewModel.setTarget(file)
-                    tab = Tab.BUILDS.ordinal
-                }
-            }
-            val source = entry?.source
-            if (source != null) choose(source)
-            else onRequest(PickerRequest(PickerMode.FILE, GAME_FILE_EXTENSIONS, File("/storage"),
-                locale.str(R.string.builds_choose_game_file), onPicked = { choose(it) }))
+        onUseCurrentProfile = {
+            // 玩家选择用当前档案继续：下一次更新带上这个开关（清单里的指纹会换成当前的）
+            runtime.useCurrentProfile()
+            actions.onUpdateRuntime(File(runtime.pack), runtime.name)
         })
 
     // 选中游戏的背景铺满整块屏幕：顶栏透明画在图上，三个 tab 共用这层背景
@@ -387,6 +437,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
             onSelect = { tab = it.ordinal },
             onRefresh = { lib.rescan() },
             onSettings = { settingsOpen = true },
+            padCount = padDevices.size,
+            onOpenPadCenter = { onPadCenter(true) },
             chip = environmentCheckUiState.chip,
             onChip = onEnvCheck,
         )
@@ -395,7 +447,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
         Box(Modifier.weight(1f)) {
             when (Tab.entries[tab]) {
                 Tab.LIBRARY -> LibraryRoute(libraryViewModel, port, player, actions,
-                    onGoBuilds = { buildsViewModel.setTarget(lib.buildsTarget); tab = Tab.BUILDS.ordinal }, onRequest = onRequest)
+                    onGoBuilds = { buildsViewModel.setTarget(lib.buildsTarget); tab = Tab.BUILDS.ordinal }, onRequest = onRequest,
+                    navActive = navHost == NavHost.LIBRARY)
                 Tab.BUILDS -> BuildsRoute(buildsViewModel, prefs.keys, environmentSetup.ready, actions, onRequest, onLog)
             }
         }
@@ -414,8 +467,23 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
             panelFile.value?.let { f ->
                 GameDetailRoute(lib, port, player, f, installedDrivers, actions,
                     onGoBuilds = { buildsViewModel.setTarget(lib.buildsTarget); tab = Tab.BUILDS.ordinal }, onRequest = onRequest,
-                    onClose = { lib.selected = null })
+                    onClose = { lib.selected = null },
+                    navActive = navHost == NavHost.PANEL)
             }
+        }
+        // 手柄中心：盖住整屏（顶栏也在下面），关掉才回到底下的页面
+        if (padCenterOpen) {
+            PadCenterScreen(
+                controller = padController,
+                onClose = { onPadCenter(false) },
+                // 谁玩谁：指派是每个游戏一份，这里看的是**正在跑**的那个游戏的（没在跑就是默认：
+                // 没被指派走的手柄都算玩家 1）
+                assignment = remember(player.running, player.titleId) {
+                    if (player.running && player.titleId.isNotEmpty())
+                        PadPlayers(padCtx, player.titleId).load()
+                    else PadAssignment()
+                },
+            )
         }
         // 设置页：盖住整屏（顶栏也在下面），关掉才回到底下的页面
         if (settingsOpen) {
@@ -424,7 +492,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
                 onRequest, onDrivers,
                 section = settingsSection, onSelectSection = { settingsSection = it },
                 onDiagnosticLog = onDiagnosticLog,
-                onClose = { settingsOpen = false })
+                onClose = { settingsOpen = false },
+                navActive = navHost == NavHost.SETTINGS)
         }
     }
 }
@@ -433,6 +502,7 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
 @Composable
 private fun TopBar(selected: Int, onSelect: (Tab) -> Unit, onRefresh: () -> Unit,
                    onSettings: () -> Unit,
+                   padCount: Int, onOpenPadCenter: () -> Unit,
                    chip: EnvCheck.Chip, onChip: () -> Unit) {
     val time by produceState(initialValue = "") {
         val format = SimpleDateFormat("HH:mm", Locale.getDefault())
@@ -467,12 +537,48 @@ private fun TopBar(selected: Int, onSelect: (Tab) -> Unit, onRefresh: () -> Unit
         Spacer(Modifier.weight(1f))
         TopIcon(Icons.Filled.Refresh, stringResource(R.string.app_refresh_library), onRefresh)
         Spacer(Modifier.width(6.dp))
+        // 手柄中心：顶栏的入口（接着几只手柄就亮几颗）
+        PadIcon(padCount, onOpenPadCenter)
+        Spacer(Modifier.width(6.dp))
         // 设置：它是一整页，从这个图标进来
         TopIcon(Icons.Filled.Settings, stringResource(R.string.app_tab_settings), onSettings)
         Spacer(Modifier.width(6.dp))
         EnvChip(chip, onChip)
         Text(time, style = MaterialTheme.typography.titleMedium,
              color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp))
+    }
+}
+
+/** 手柄的入口：接着手柄时图标是亮的，旁边一个数字是接了几只。 */
+@Composable
+private fun PadIcon(padCount: Int, onClick: () -> Unit) {
+    val description = stringResource(R.string.app_pad_center_connected, padCount)
+    Box(
+        Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(
+                Icons.Filled.SportsEsports,
+                null,
+                Modifier.size(22.dp),
+                tint = if (padCount > 0) MaterialTheme.colorScheme.onBackground else NxPalette.Unbuilt,
+            )
+            if (padCount > 0) {
+                Text(
+                    "$padCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 

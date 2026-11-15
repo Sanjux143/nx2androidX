@@ -8,12 +8,59 @@ players on the released version are not pushed onto an alpha.
 
 The release page has the APK and the full notes: <https://github.com/zFitness/nx2androidX/releases>.
 
-## Unreleased
+## v0.3.0-alpha11 - 2026-11-14
+
+### Before you update
+
+- The player API moved to revision 4 (the motion switches, the audio output and the GPU clock), so a pack made with an older one is marked as needing a runtime update. "Update runtime" in the library rebuilds it in place: the game does not have to be ported again, and your saves are kept.
+- This release carries the upstream line's work: the engine's own fixes and nineteen more games that play on Android.
+
+### New games
+
+- The Legend of Zelda: Breath of the Wild (experimental, 60 fps with 1.9.0)
+- Pokémon Sword, Pokémon Shield, Pokémon Brilliant Diamond, Pokémon Scarlet
+- Fire Emblem Engage (60 fps with 2.0.0)
+- Super Mario 3D World + Bowser's Fury
+- The World Ends with You -Final Remix-
+- Pokémon Mystery Dungeon Rescue Team DX
+- Rhythm Heaven Groove
+- Kirby's Return to Dream Land Deluxe (it reads the console's fonts, so it needs the firmware)
+- Mega Man Battle Network Legacy Collection Vol. 1 and Vol. 2
+- Cardfight!! Vanguard Dear Days 2
+- Disco Elysium - The Final Cut
+- Tomodachi Life: Living the Dream
+- Untitled Goose Game
+- FM24 Touch, Football Manager 26 Touch
+
+### New
+
+- The drawer gives the audio a tab of its own: the output follows the system, or one of the devices the system has (a Bluetooth headset, a USB dongle).
+- The GPU's clock is a switch in the drawer: off, always at its highest, or only while the frames miss the display.
+- The motion switches move to the game's drawer, and the device's turn moves the game's six-axis sensor.
+- The build page takes the player's own font, the console's firmware and the multithreaded replay.
+- The library says what a game needs before the port: the API it draws with, whether it plays over the local network, and how far its profile got.
+- The firmware is one for the machine: import it from a zip, in the environment checklist, the settings, the guided setup or the build page. The chip says when the machine has none.
+- The gamepad's style is the player's pick: the bundled theme or the default pack, remembered per game and in effect at once.
+- The log bundle carries how the port ended (the exit code, or the signal that killed it) and the device's memory at that moment.
+
+### Fixed
+
+- The shader split spills its payloads to the disk: a phone's memory does not hold a game's shaders (FINAL FANTASY RESONANCE has 73,512 of them), so the package is written from the disk, one shader at a time. The split has a budget now, and stops with a clear error when the device has no room for it.
+- A change to the shader split no longer makes the port translate every shader again: the translation is reused, and the port takes 40 seconds instead of 40 minutes.
+- The frame generation no longer comes and goes: it holds itself back in one piece, its label follows the host's own state, and the optical flow works on half the picture.
+- The game's own decoder runs only for the games that need it: a dump of another version stops with a message that says which version the profile registers, instead of crashing.
+- A port the system killed (out of memory) leaves a log now, and the app says how the run ended.
+- The library page no longer asks for a driver: the app ships the Turnip driver and picks it by default.
 
 ### Changed
 
-- **The whole repository is now GPL-3.0-or-later.** It was MIT, with the frame generation as the one GPL component in the tree. The MIT terms let anyone take the code and ship a closed app from it; the GPL terms require a derivative to be distributed under the same license, with its source and the notices kept. The license follows the code that was taken, not what the build linked: the frame generation can be left out of a build (`-PnxLsfg=false`), and the result is still GPL. The third-party components keep their own licenses, the upstream engine's copyright notice is kept, and the full license text travels with the app and the desktop bundle.
+- **The app and the repository are GPL-3.0-or-later.** The tree used to be MIT, with the frame generation as the one GPL component in it. The MIT terms let anyone take the code and ship a closed app from it; the GPL terms require a derivative to be distributed under the same license, with its source and the notices kept. The license follows the code that was taken, not what the build linked: the frame generation can be left out of a build (`-PnxLsfg=false`), and the result is still GPL. The third-party components keep their own licenses, the upstream engine's copyright notice is kept, and the full license text travels with the app and the desktop bundle.
 - **The license files are laid out so that a machine reads them.** `LICENSE` is the GPL-3.0 text alone, so GitHub shows the repository as GPL-3.0 instead of "Other"; `NOTICE.md` says what those terms cover, who holds the copyright on what (the upstream engine and the upstream desktop tool are named, with their MIT text quoted), and which parts keep a license of their own. The app's own notice no longer says that selling it is not allowed: the GPL lets a distributor charge for a copy, so the notice says what the license actually says.
+
+### Community ports
+
+- No community pull request has been merged since the last version.
+- Everyone in this release's history is named in the README's contributors table.
 
 ## v0.3.0-alpha10 - 2026-11-13
 

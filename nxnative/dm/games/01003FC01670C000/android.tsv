@@ -11,3 +11,4 @@ tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Androi
 package	org.nx2a.thirteensentinels
 orientation	landscape
 requires	bcn
+graphics	nvn

@@ -43,27 +43,115 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
+import base64, collections, concurrent.futures as cf, hashlib, json, mmap, os, re, struct, subprocess, sys
 from forkpool import fork_map   # the pool without semaphores (no /dev/shm, as on Android)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
+from shader_stage import CS_MAGIC, GFX_MAGIC, glslc_stage, sph_stage   # the stage rules (the Vulkan translator reads them too, without the split's readers)
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
+LOOSE_MONO = tuple(GAME.words('shader_loose_monolith', ''))   # extensions of loose Monolith files that carry HCPS shader archives (Xenoblade Chronicles: Definitive Edition: .wishp .wismt .wismda .wiefb .wimdo); empty: none are scanned
 # The sources are what the game files hold, with no profile switch: GLSLC outputs in main (glslc_shaders), the outputs the game compiles at run time when a capture is there (DM_GLSLC_CAPTURE,
 # hle_glslc.c), the shader code archives of Unreal paks once decoded on the Mac (uepak.py, DM_OODLE_JOB, hle_oodle.c); the NSP script decides from the files which of the last two to make
 
-CTL_MAGIC, GFX_MAGIC, CS_MAGIC = bytes.fromhex('34127698'), bytes.fromhex('78563412'), bytes.fromhex('79563412')
+CTL_MAGIC = bytes.fromhex('34127698')
 STAGES = ['vs', 'hs', 'ds', 'gs', 'ps', 'cs']
-SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}
-def sph_stage(code):
-    """A graphics code area's stage from its SPH word 0: shader type in bits 10..13. Catherine: Full Body's GLSLC (SDK 8.2.1, GPU code version 1.15) writes 0 there in every vertex shader
-    (word 0 = 0x0061: SPH type 1 VTG, version 3), in its shaders_binary files and in what it compiles at run time, where every other game's vertex shaders have 1 (0x0461); Ryujinx's ShaderHeader
-    reads a graphics header's 0 as a vertex shader as well, so it is one here"""
-    w = struct.unpack_from('<I', code, 0x30)[0]
-    return 'vs' if (w >> 10) & 0xf == 0 and w & 0x1f == 1 else SPH_STAGE.get((w >> 10) & 0xf)
 STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute'}   # shader_map.tsv column 3
 
 def red(msg): sys.exit('[RED] ' + msg)
+
+# ---- the shaders' payloads on disk, not in memory ----
+# A phone's memory does not hold a game's shaders: FINAL FANTASY RESONANCE has 73,512 of them, and their code areas and control sections are held all at once until the
+# package is written. They go to a spill file instead (one per process: the pool's children are forked, and they must not write into the same file), and only the place in it
+# is kept in memory. The package is written from the spill file, one shader at a time.
+class Payload:
+    """A shader's control section or code area in the spill file: its place in the file, its length and (for a control section) its key"""
+    __slots__ = ('path', 'off', 'n', 'key')
+    def __init__(self, path, off, n, key=None): self.path, self.off, self.n, self.key = path, off, n, key
+
+SPILL_DIR = os.environ.get('DM_SHADER_SPILL_DIR', '')   # the folder the payloads go to (beside the package); empty = no spill (the caller decides)
+_SPILL = None       # this process's spill file
+_PAYFILES = {}      # the spill files open for reading (the parent reads what the children wrote)
+BUDGET_MB = int(os.environ.get('DM_SHADER_SPLILL_BUDGET_MB', '0'))   # the memory budget (0 = the device's own share decides)
+
+def meminfo():
+    """The device's memory in MB: the total and the available (Linux: /proc/meminfo; elsewhere: nothing)"""
+    try:
+        with open('/proc/meminfo') as f:
+            total = avail = None
+            for ln in f:
+                if ln.startswith('MemTotal:'): total = int(ln.split()[1]) / 1024
+                elif ln.startswith('MemAvailable:'): avail = int(ln.split()[1]) / 1024
+            return total, avail
+    except OSError: return None, None
+
+def budget_mb():
+    """The split's memory budget: a share of the device's memory, so a small phone stops the split with a clear error before the system kills it (a 24 GB phone: 2 GB, a 4 GB one: 512 MB).
+    DM_SHADER_SPLILL_BUDGET_MB overrides it; no /proc (a Mac): the default"""
+    if BUDGET_MB: return BUDGET_MB
+    total, _ = meminfo()
+    if not total: return 1000
+    return max(256, min(int(total / 8), 2048))
+
+def check_room():
+    """The device's free memory: too little, the split stops now with a clear error instead of being killed halfway"""
+    _, avail = meminfo()
+    if avail is not None and avail < 256:
+        red(f'the device has only {avail:.0f} MB of memory free: the shader split has no room to run; close the other apps and start it again')
+
+def spill_file():
+    """This process's spill file (one per process)"""
+    global _SPILL
+    if _SPILL is None or _SPILL.pid != os.getpid():
+        os.makedirs(SPILL_DIR, exist_ok=True)
+        path = os.path.join(SPILL_DIR, f'payload-{os.getpid()}.bin')
+        _SPILL = open(path, 'wb', buffering=1 << 20)   # a megabyte's buffer: the payloads go to the disk in big writes
+        _SPILL.pid = os.getpid(); _SPILL.path = path
+    return _SPILL
+
+def spill_flush():
+    """The spill file on disk (the parent reads what a child wrote, after the child is gone). Only this process's file: a forked child inherits the parent's handle"""
+    if _SPILL and _SPILL.pid == os.getpid(): _SPILL.flush()
+
+def spill(ctl, code, key):
+    """The control section and the code area into the spill file → (control reference, code reference)"""
+    if not SPILL_DIR: return ctl, code
+    if isinstance(ctl, Payload): return ctl, code   # already in the spill file
+    f = spill_file(); off = f.tell()
+    f.write(ctl); f.write(code)
+    return Payload(f.path, off, len(ctl), key), Payload(f.path, off + len(ctl), len(code))
+
+def payload_get(p):
+    """A payload's bytes"""
+    if not isinstance(p, Payload): return p
+    f = _PAYFILES.get(p.path)
+    if f is None: f = _PAYFILES[p.path] = open(p.path, 'rb')
+    f.seek(p.off); return f.read(p.n)
+
+def mem_mb():
+    """The process's memory in MB: the anonymous part (the heap; the mapped files' pages are the system's cache, and the system can drop them), else the whole resident set.
+    Elsewhere (no /proc): the peak from getrusage"""
+    try:
+        with open('/proc/self/status') as f:
+            anon = rss = None
+            for ln in f:
+                if ln.startswith('RssAnon:'): anon = int(ln.split()[1]) / 1024
+                elif ln.startswith('VmRSS:'): rss = int(ln.split()[1]) / 1024
+            if anon is not None: return anon
+            if rss is not None: return rss
+    except OSError: pass
+    try:
+        import resource
+        r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return r / (1024 * 1024) if sys.platform == 'darwin' else r / 1024
+    except Exception: return 0
+
+def check_budget(done, total):
+    """The split's memory budget: over it, the split stops with a clear error instead of being killed by the system (a phone)"""
+    b = budget_mb()
+    if not b: return
+    m = mem_mb()
+    if m > b: red(f'the shader split used {m:.0f} MB of memory, over its budget of {b} MB ({done:,} of {total:,} shaders done): this device has no room for them')
 
 def zstd_mod():
     """The zstd module: compression.zstd from Python 3.14, its backport before (pip install backports.zstd), the same API"""
@@ -80,19 +168,22 @@ def ctl_len(ctl):
     return n if 0x760 <= n < 0x880 else 0x880
 
 def skey(ctl, code):
+    if isinstance(ctl, Payload): return ctl.key   # a spilled control section: its key was computed before it went to the spill file
     return hashlib.sha256(ctl[:ctl_len(ctl)] + code).hexdigest()[:16]
 
 def same_shader(a, b):
     """Two copies of one key hold the same shader: the code areas are equal, and so are the control sections up to their own length (control +0x20). Pokémon Legends: Z-A's UI layout archives
     (__ArchiveShader.bnsh inside the .truiv packs) give 104 KB control sections whose stage descriptor length runs 456 bytes past their own length, and those trailing bytes differ between copies"""
     (ca, ka), (cb, kb) = a, b
+    ca, ka, cb, kb = payload_get(ca), payload_get(ka), payload_get(cb), payload_get(kb)
     n = struct.unpack_from('<I', ca, 0x20)[0] if len(ca) >= 0x24 else len(ca)
     n = n if 0x760 <= n <= min(len(ca), len(cb)) else max(len(ca), len(cb))
     return ka == kb and ca[:n] == cb[:n]
 
 def check(where, st, ctl, code):
     """control section and code area consistent; returns the reason if not"""
-    if ctl[:4] != CTL_MAGIC or len(ctl) < ctl_len(ctl): return 'bad control section'
+    # an inflated bundle resource may hold a section of just the magic: ctl_len reads the length field at +0x20, so it needs 0x24 bytes
+    if len(ctl) < 0x24 or ctl[:4] != CTL_MAGIC or len(ctl) < ctl_len(ctl): return 'bad control section'
     # a compute code area may have no header (SDK 10's Super Mario 3D World + Bowser's Fury and D2R: instructions start at +0; dmsh_build strips only a 0x12345679 header)
     if st == 'cs' and code[:4] in (CS_MAGIC, GFX_MAGIC) and code[:4] != CS_MAGIC or st != 'cs' and code[:4] != GFX_MAGIC: return 'code area header magic does not match the stage'
     if struct.unpack_from('<I', ctl, 0x704)[0] != len(code): return 'control +0x704 does not match the code area length'
@@ -149,11 +240,6 @@ def mshd_shaders(d, label):
     if len(out) % 2: red(f'{label} MSHD: {len(out)} stages, not in pairs')
     return out
 
-def glslc_stage(ctl, code):
-    """A GLSLC output's stage, from its code area's header (graphics: the SPH's stage bits), or compute when the code has no header and the control's thread group (+0x748) is filled"""
-    headerless_cs = code[:4] not in (CS_MAGIC, GFX_MAGIC) and len(ctl) >= 0x754 and all(struct.unpack_from('<3I', ctl, 0x748))
-    return 'cs' if code[:4] == CS_MAGIC or headerless_cs else sph_stage(code) if code[:4] == GFX_MAGIC and len(code) >= 0x34 else None
-
 def glslc_section(d, h, size):
     """The GPU code sections of the GLSLC output at h, from its section headers: output +0x4c = section count, section i's header at +0x90 + 0x90 i = {u32 size, u32 data offset (from the
     output), u32 type (0 = GPU code)}; a GPU code header adds +0x30 control offset, +0x34 code offset (both from the section's data), +0x38 code length, +0x3c control length.
@@ -188,11 +274,16 @@ def glslc_shaders(d, label, need=True):
     something else at control +0x20 (odd values such as 0x136b), so a length that is not a multiple of 4 is not a control length"""
     out = []
     for m in re.finditer(b'\x91\x68\x86\x19', d):
-        h = m.start(); size = struct.unpack_from('<I', d, h + 0x44)[0]
+        h = m.start()
+        # a resource block of a bundle (bnd2_shaders) is untrusted: the magic's 4 bytes may be all it holds
+        if h + 0x48 > len(d): continue
+        size = struct.unpack_from('<I', d, h + 0x44)[0]
         c = d.find(CTL_MAGIC, h, h + size) if 0x760 < size <= len(d) - h else -1
         if c < 0: continue
         if d.find(CTL_MAGIC, c + 4, h + size) >= 0:
             out += glslc_program(d, h, size, label); continue
+        # the found control magic may end the block short of its own header
+        if c + 0x708 > len(d): continue
         nctl, ncode = struct.unpack_from('<I', d, c + 0x20)[0], struct.unpack_from('<I', d, c + 0x704)[0]
         ctl, code = d[c:c + nctl], d[c + nctl:c + nctl + ncode]
         st = glslc_stage(ctl, code) if nctl >= 0x760 and not nctl & 3 and c + nctl + ncode <= h + size else None
@@ -257,14 +348,15 @@ def idrk_shaders(path, label, out):
             if idrk_data(d, a, b, flags, 4) in (b'_S2G', b'_DOK'): out.extend(glslc_shaders(idrk_data(d, a, b, flags), f'{label}#IDRK@{a:#x}', need=False))
 
 G2S, SPKG = b'_S2G3000', b'SPKG'
-def kt_gz(d):
-    """Koei Tecmo's older chunked zlib (Fire Emblem: Three Houses: the compressed entries of DATA1.bin and the patch*/…/*.gz files): u32 chunk size (0x10000), u32 chunk count, u32 inflated length,
+def kt_gz(d, chunk=0x10000):
+    """Koei Tecmo's older chunked zlib (Fire Emblem: Three Houses: the compressed entries of DATA1.bin and the patch*/…/*.gz files; Ultra Kaiju Monster Rancher: its RomFS *.gz files, among them
+    shader/*Shader.lnkbin.gz, shader/ScreenLayoutShader.g1s.gz and stage/stage_terrain_shader.lnkbin.gz): u32 chunk size (0x10000 in Three Houses, 0x20000 in Ultra Kaiju), u32 chunk count, u32 inflated length,
     u32 stored length of each chunk, then the chunks at 0x80 alignment, each a u32 length + one zlib stream, or the plain bytes when the stored length equals the chunk's inflated length (a short last
     chunk, or one that does not compress). → the inflated data, or None when d is not in that form"""
     import zlib
     if len(d) < 16: return None
     cs, n, tot = struct.unpack_from('<III', d)
-    if cs != 0x10000 or not n or n != (tot + cs - 1) // cs or 12 + 4 * n > len(d): return None
+    if cs != chunk or not n or n != (tot + cs - 1) // cs or 12 + 4 * n > len(d): return None
     sizes = struct.unpack_from(f'<{n}I', d, 12); o = (12 + 4 * n + 0x7f) & ~0x7f; out = []
     for i, s in enumerate(sizes):
         if o + s > len(d): return None
@@ -275,6 +367,23 @@ def kt_gz(d):
             except zlib.error: return None
         o = (o + s + 0x7f) & ~0x7f
     return b''.join(out)
+
+def gust_gz(d):
+    """Gust's chunked zlib (Atelier Ryza DX: 156 of its 4,112 *.elixir.gz files, among them PostEffect/pe_pack.elixir.gz with the post effects' 162 GLSLC outputs; the other 3,956 are plain
+    'CRAE' archives): chunks of a u32 stored length and one zlib stream (16 KB inflated, the last shorter) until a zero length, which ends the file. → the inflated data, or None when d is
+    not in that form"""
+    import zlib
+    o, out = 0, []
+    while o + 4 <= len(d):
+        n = struct.unpack_from('<I', d, o)[0]; o += 4
+        if not n: return b''.join(out) if out and o == len(d) else None
+        if o + n > len(d) or d[o] != 0x78: return None
+        z = zlib.decompressobj()
+        try: out.append(z.decompress(d[o:o + n]))
+        except zlib.error: return None
+        if not z.eof or z.unused_data: return None
+        o += n
+    return None
 
 def kt_shaders(d, label, out):
     """Three Houses' KTGL keeps its shaders in SPKG packages (patch*/nx/shader/*.spkg, and 132 entries of DATA1.bin), each holding G2S containers ('_S2G3000', as in Age of Calamity) of GLSLC outputs,
@@ -374,13 +483,14 @@ PG_STAGES = {b'VSO\0': 'vs', b'HSO\0': 'hs', b'DSO\0': 'ds', b'GSO\0': 'gs', b'P
 def pkz_entries(path):
     """A PlatinumGames PKZ archive (Bayonetta 3: 72 in the RomFS root, 14 GB): 'pkzl', u32 version 0x20000, u64 archive length, u32 file count, u32 entry table offset (0x20), u32 name table length,
     u32 alignment (0x1000); then one 0x20-byte entry per file {u32 name offset, u32 compression name offset (both into the name table right after the entries), u64 length, u64 offset,
-    u64 stored length}. The compression is named per entry: 'OodleKraken' (main+0xcbdf80 maps it to 0xc9 and reads it through Oodle's streaming decoder), 'ZStandard' (0x65) or 'None'.
+    u64 stored length}. ASTRAL CHAIN's version 0x10000 uses the same layout (82 archives, 8,556 ZStandard entries); its last header word is zero instead of the v2 alignment.
+    The compression is named per entry: 'OodleKraken' (main+0xcbdf80 maps it to 0xc9 and reads it through Oodle's streaming decoder), 'ZStandard' (0x65) or 'None'.
     → [(name, compression, offset, stored length, length)], or None when path is no PKZ"""
     with open(path, 'rb') as f:
         h = f.read(0x20)
         if h[:4] != PKZL: return None
         ver, _, n, eo, nl = struct.unpack_from('<IQIII', h, 4)
-        if ver != 0x20000: red(f'{path}: PKZ version {ver:#x}: only 0x20000 is known')
+        if ver not in (0x10000, 0x20000): red(f'{path}: PKZ version {ver:#x}: only 0x10000 and 0x20000 are known')
         f.seek(eo); t = f.read(0x20 * n + nl)
     nm = lambda o: t[0x20 * n + o:t.index(b'\0', 0x20 * n + o)].decode()
     return [(nm(a), nm(c), off, csz, usz) for a, c, usz, off, csz in struct.iter_unpack('<IIQQQ', t[:0x20 * n])]
@@ -1025,7 +1135,7 @@ def slct_programs(s, xv4, xc, ctls, uc, label, strict):
         for si, co, cl, to, tl in (struct.unpack_from('<5I', nv, eo + 20 * i) for i in range(en)):
             if not cl: continue
             code, ctl = xv4[xc + co:xc + co + cl], ctls[uc + to:uc + to + tl]
-            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
+            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else 'cs' if LOOSE_MONO and si == 5 else None   # stage 5 is compute: Xenoblade Chronicles: Definitive Edition's has no code header (shd_lgt / shd_post.wishp)
             why = 'no code area header' if not st else check(label, st, ctl, code)
             if why and strict: red(f'{label} program {p} stage {si}: {why}')
             if why: return None
@@ -1175,12 +1285,17 @@ ZDICTS, _ZD = {}, {}       # zstd dictionaries by ID (given when the pool starts
 def pool_map(fn, items, J, initargs, chunksize=1):
     """The work in a pool of processes. A host without /dev/shm (Android has none) cannot make the POSIX semaphores the
     pool needs, so the children are forked instead (forkpool.py): the same work, in parallel, without semaphores"""
+    def run(item):
+        r = fn(item)
+        spill_flush()   # what the child wrote goes to disk before the parent reads it
+        return r
+    spill_flush()   # what this process wrote goes to disk before the children are forked (they inherit its handle)
     try:
         with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=initargs) as ex:
-            return list(ex.map(fn, items, chunksize=chunksize))
+            return list(ex.map(run, items, chunksize=chunksize))
     except (FileNotFoundError, OSError) as e:
         print(f'note: no process pool ({e.__class__.__name__}: {e}): the work runs in forked children', file=sys.stderr)
-        return fork_map(fn, items, J, lambda: _pool_init(*initargs))
+        return fork_map(run, items, J, lambda: _pool_init(*initargs))
 
 def _pool_init(common, trees, zdicts={}):
     global COMMON, TREES, ZDICTS
@@ -1292,6 +1407,7 @@ def unity_compute(x, base, trees):
             for v in o['variants']:
                 for k in v['kernels']:
                     for i, u in enumerate(k['uniqueVariants'] if 'uniqueVariants' in k else [p['second'] for p in k['variantMap']] if 'variantMap' in k else [k]):
+                        if not u['code']: continue   # Unity 6 may ship empty kernels (DAVE THE DIVER); they have no program to decode
                         where = f'{base}#{o["m_Name"]}#{k["name"]}.{i}'
                         out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(u['code'], where, 'cs'))
     except unityfs.NoTree as e:
@@ -1355,13 +1471,58 @@ def separable_pairs(keys):
     All pairs would be 376 × 375 rows; the cover needs a few rows × 376. No single-stage vertex shader, no cover"""
     single = [v for v in keys if keys[v][1] == 'vs' and any(s in keys[v][0] for s in SINGLE_STAGE) and '#var' not in keys[v][0]]   # '#var': a GLSLC output of several stages (glslc_program)
     if not single: return set(), []
-    ins = {k: ps_inputs(v[3]) for k, v in keys.items() if v[1] == 'ps'}
+    ins = {k: ps_inputs(payload_get(v[3])) for k, v in keys.items() if v[1] == 'ps'}
     left, cover = set().union(*ins.values()) if ins else set(), []
     while left:
         k = min(ins, key=lambda k: (-len(ins[k] & left), k)); cover.append(k); left -= ins[k]
     return {(v, p) for v in single for p in cover}, cover
 
 SMASH_ARC = struct.pack('<Q', 0xABCDEF9876543210)   # smash_arc.MAGIC (scan_file reads only the first bytes, without importing the reader)
+HEAPS_CACHE = 'shaders.cache.nx'
+
+def heaps_pak_files(f):
+    """The files of a Heaps PAK archive, open at +0 → [(path, offset in the archive, size)], or None when it is not one (other engines' .pak files share the magic's first bytes).
+    'PAK', a version byte, i32 header size (it counts these bytes, and the file data starts there), i32 data size; version 1 then holds a 64-character hash. The root entry follows, then 'DATA'.
+    An entry: u8 name length, name, u8 flags; a folder (bit 0) has i32 child count and its children, a file has its position in the data (f64 with bit 1, else i32), i32 size, i32 checksum"""
+    head = f.read(12)
+    if len(head) < 12 or head[:3] != b'PAK' or head[3] > 1: return None
+    size, _dsize = struct.unpack_from('<ii', head, 4)   # signed data size is only a hint; wide offsets can exceed it
+    if not 12 < size <= 1 << 28: return None
+    f.seek(0, os.SEEK_END); end = f.tell(); f.seek(12)
+    if size > end: return None
+    h = f.read(size - 12); out = []
+    if len(h) != size - 12: return None
+    def entry(p, path):
+        n = h[p]; name = h[p + 1:p + 1 + n].decode('utf-8'); fl = h[p + 1 + n]; p += n + 2
+        if fl & ~3: raise ValueError('unknown entry flags')
+        path = f'{path}/{name}' if name else path
+        if fl & 1:
+            cnt, = struct.unpack_from('<i', h, p); p += 4
+            if not 0 <= cnt <= len(h): raise ValueError('invalid child count')
+            for _ in range(cnt): p = entry(p, path)
+            return p
+        pos = struct.unpack_from('<d', h, p)[0] if fl & 2 else struct.unpack_from('<i', h, p)[0]; p += 8 if fl & 2 else 4
+        n, _ = struct.unpack_from('<iI', h, p)
+        offset = int(pos)   # rejects NaN/infinity before seeking
+        if offset != pos or offset < 0 or n < 0 or size + offset + n > end: raise ValueError('invalid file range')
+        out.append((path, size + offset, n))
+        return p + 8
+    try: header_end = entry(64 if head[3] else 0, '')
+    except (IndexError, struct.error, ValueError, OverflowError, RecursionError): return None
+    return out if h[header_end:header_end + 4] == b'DATA' else None
+
+def heaps_shaders(d, label):
+    """Heaps' hxsl.CacheFile for the Switch (Dead Cells' shaders.cache.nx): a table of programs, then each stage's GLSL; a GLSL that was compiled ends with a comment holding the base64 of its
+    GLSLC output, //BIN=<base64>#. Dead Cells: 1,222 of its 1,271 sources have one, the others are vertex shaders the outputs already hold, since an output is the whole program"""
+    found = []
+    for m in re.finditer(rb'//BIN=([^#\r\n]*)(#|[\r\n]|$)', d):
+        if m[2] != b'#': red(f'{label}@{m.start():#x}: unterminated //BIN= comment')
+        try: raw = base64.b64decode(m[1], validate=True)
+        except ValueError: red(f'{label}@{m.start():#x}: invalid base64 in //BIN= comment')
+        found += glslc_shaders(raw, f'{label}@{m.start():#x}')
+    if not found: red(f'{label}: no GLSLC output in //BIN= comments')
+    return found
+
 UE_TAG = {'SV': 'vs', 'SH': 'hs', 'SD': 'ds', 'SG': 'gs', 'SP': 'ps', 'SC': 'cs'}
 def main_imports(img):   # the names main imports (its dynamic symbols)
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../tools')); import nso_syms
@@ -1387,7 +1548,7 @@ def ue_shaders(d, label):
         if not st or uepak.FREQ.get(fr) != st: red(f'{label}: shader {i} has tag {tag} but frequency {fr}')
         why = check(label, st, ctl, code)
         if why: red(f'{label}: shader {i} ({st}): {why}')
-        out.append((f'{label}#UE{i}', st, ctl, code))
+        out.append((f'{label}#UE{i}', st, *spill(ctl, code, skey(ctl, code))))   # the payload to the spill file (FINAL FANTASY RESONANCE: 74,244 shaders)
     return out
 
 def var_pairs(found):
@@ -1397,6 +1558,106 @@ def var_pairs(found):
         if '#var' in where: var[where][st] = skey(ctl, code)
     return {(v['vs'], v['ps']) for v in var.values() if 'vs' in v and 'ps' in v}
 
+BND2 = b'bnd2'
+
+def field(d, fmt, at, where):
+    """struct.unpack_from(fmt, d, at) of a field a header or table points at: red() naming where and the offset when it is not inside d (a damaged or cut file)"""
+    if not 0 <= at <= len(d) - struct.calcsize(fmt): red(f'{where}: {struct.calcsize(fmt):#x} bytes at {at:#x} lie outside the {len(d):#x} bytes there are')
+    return struct.unpack_from(fmt, d, at)
+
+def span(d, at, n, where):
+    """d[at:at + n], or red() naming where when the range is not inside d (a slice would silently come out short)"""
+    if not (0 <= at and 0 <= n <= len(d) - at): red(f'{where}: {n:#x} bytes at {at:#x} lie outside the {len(d):#x} bytes there are')
+    return d[at:at + n]
+
+def bnd2_v2_resources(d, label):
+    """Burnout Paradise's Bundle 2 (version 2): the resources bnd2_resources returns: → [(resource ID, type, block, data)].
+    Header: +0x04 version, +0x08 platform, +0x10 entry count, +0x14 entry table offset, +0x18/+0x1C/+0x20 the three blocks' data offsets (block 1: graphics memory).
+    An entry is 0x40 bytes: +0x00 resource ID u64, +0x10 three uncompressed sizes, +0x1C three sizes on disk (each with the alignment in the top nibble), +0x28 three
+    offsets from that block's data offset, +0x38 type ID (0x12 a shader, 0x32 its program, in the game's own numbering). A block is zlib or raw and nothing in the header
+    says which: the shader and AI bundles zlib their blocks (stored < expected; AI.DAT keeps its one resource in block 0, 0x367e60 bytes, 0x1b14a8 on disk; SHADERS.BNDL
+    keeps its 242 shaders' GLSLC outputs in block 1, its first, resource 00433b5e, 0x9f00 bytes at 0), the track bundles store every block uncompressed (stored ==
+    expected) — and a raw block's first two bytes can still look like a zlib header, so the inflate and its size decide"""
+    import zlib
+    cnt, eoff, *datoff = field(d, '<5I', 0x10, f'{label}: bnd2 header')
+    table_end = eoff + cnt * 0x40
+    if eoff < 0x30 or table_end > len(d) or any(x > len(d) for x in datoff):
+        red(f'{label}: bnd2 version 2 with {cnt} entries at {eoff:#x} and blocks at {", ".join(map(hex, datoff))} is not a layout this reader knows')
+    out = []
+    for i in range(cnt):
+        e = eoff + i * 0x40
+        rid, = struct.unpack_from('<Q', d, e); typ, = struct.unpack_from('<I', d, e + 0x38)
+        unpacked = struct.unpack_from('<3I', d, e + 0x10)
+        sizes = struct.unpack_from('<3I', d, e + 0x1C); offs = struct.unpack_from('<3I', d, e + 0x28)
+        for k in range(3):
+            n = sizes[k] & 0x0FFFFFFF; expected = unpacked[k] & 0x0FFFFFFF
+            where = f'{label}: bnd2 resource {rid:016x} block {k}'
+            if not n:
+                if expected: red(f'{where}: declares {expected} bytes and has none stored')
+                continue
+            start = datoff[k] + offs[k]
+            if start < table_end: red(f'{where}: its data at {start:#x} starts inside the resource table')
+            raw = span(d, start, n, where)
+            # the stream's own header says zlib: CMF 0x78 (deflate, 32 KB window) and a FLG that makes CMF * 256 + FLG a multiple of 31 (78 01, 78 5e, 78 9c, 78 da).
+            # That is no proof, though: a raw block can start with those two bytes by chance. Track bundles store every block uncompressed (stored == expected), the
+            # shader and AI bundles zlib theirs (stored < expected), so inflate when the header says zlib — and on a failed inflate or a wrong size, the stored bytes
+            # are the data when stored == expected
+            if len(raw) >= 2 and raw[0] == 0x78 and (raw[0] << 8 | raw[1]) % 31 == 0:
+                dec = zlib.decompressobj()
+                try:
+                    zraw = dec.decompress(raw, expected + 1)
+                    if dec.eof and len(zraw) == expected: raw = zraw
+                    elif n != expected: red(f'{where}: incomplete zlib stream or decompressed size differs from declared size {expected}')
+                except zlib.error as e:
+                    if n != expected: red(f'{where}: damaged zlib stream ({e})')
+            elif len(raw) != expected: red(f'{where}: stored size differs from declared size {expected}')
+            out.append((rid, typ, k, raw))
+    return out
+
+def bnd2_resources(d, label):
+    """The resources of a Criterion Bundle 2 ('bnd2', Burnout Paradise's format; version 3 in Need for Speed: Hot Pursuit Remastered): → [(resource ID, type, block, data)].
+    Version 2 (Burnout Paradise) has another layout: bnd2_v2_resources.
+    Header: +0x04 version, +0x08 platform, +0x10 entry count, +0x14 entry table offset, +0x18 four block data offsets (u32), +0x28 flags (bit 0: resources zlib-compressed).
+    An entry is 0x50 bytes: +0x00 resource ID u64, +0x08 import hash u64, +0x10 four uncompressed sizes, +0x20 four sizes on disk (each with the alignment in the top
+    nibble), +0x30 four offsets (from that block's data offset), +0x40 import offset, +0x44 type ID, +0x48 import count u16, flags u8, stream index u8.
+    A resource has up to four blocks (0: main memory, 1: graphics memory). Hot Pursuit Remastered's SHADERS.BNDL keeps one whole GLSLC output in block 1 of each type 0x8 resource (2,112)"""
+    import zlib
+    if field(d, '<I', 4, f'{label}: bnd2 version')[0] == 2: return bnd2_v2_resources(d, label)
+    ver, _, _, cnt, eoff, *datoff, flags = field(d, '<10I', 4, f'{label}: bnd2 header')
+    table_end = eoff + cnt * 0x50
+    if ver not in (2, 3) or eoff < 0x30 or table_end > len(d): red(f'{label}: bnd2 version {ver} with {cnt} entries at {eoff:#x} is not a layout this reader knows')
+    out = []
+    for i in range(cnt):
+        e = eoff + i * 0x50
+        rid, = struct.unpack_from('<Q', d, e); typ, = struct.unpack_from('<I', d, e + 0x44)
+        unpacked = struct.unpack_from('<4I', d, e + 0x10)
+        sizes = struct.unpack_from('<4I', d, e + 0x20); offs = struct.unpack_from('<4I', d, e + 0x30)
+        for k in range(4):
+            n = sizes[k] & 0x0FFFFFFF; expected = unpacked[k] & 0x0FFFFFFF
+            where = f'{label}: bnd2 resource {rid:016x} block {k}'
+            if not n:
+                if expected: red(f'{where}: declares {expected} bytes and has none stored')
+                continue
+            start = datoff[k] + offs[k]
+            if start < table_end: red(f'{where}: its data at {start:#x} starts inside the resource table')
+            raw = span(d, start, n, where)
+            if flags & 1:
+                dec = zlib.decompressobj()
+                try: raw = dec.decompress(raw, expected + 1)
+                except zlib.error as e: red(f'{where}: damaged zlib stream ({e})')
+                if not dec.eof or len(raw) != expected: red(f'{where}: incomplete zlib stream or decompressed size differs from declared size {expected}')
+            elif len(raw) != expected: red(f'{where}: stored size differs from declared size {expected}')
+            out.append((rid, typ, k, raw))
+    return out
+
+def bnd2_shaders(d, label):
+    """GLSLC outputs in the resources of a Criterion Bundle 2 (bnd2_resources), each resource block scanned with glslc_shaders. Bundles without shaders (tracks, vehicles, UI) cost one
+    inflate of each resource; the outputs' magic decides, not the resource type, whose numbering is per game"""
+    found = []
+    for rid, typ, k, r in bnd2_resources(d, label):
+        if b'\x91\x68\x86\x19' in r: found += glslc_shaders(r, f'{label}/{rid:016x}.{typ:x}.{k}', need=False)
+    return found
+
 def scan_file(args):
     """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, or 'defer' (no type tree, scanned again in the second pass)"""
     path, rel = args[:2]
@@ -1404,6 +1665,9 @@ def scan_file(args):
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
     found = []; trees = {}
+    if LOOSE_MONO and ext in LOOSE_MONO and not (len(args) > 2):   # a loose Monolith file (.wishp, .wismt, .wismda …): HCPS archives in the file itself or in its xbc1 streams (mono_shaders)
+        mono_shaders(open(path, 'rb').read(), '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == NLG_DICT:
         nlg_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1434,8 +1698,22 @@ def scan_file(args):
     if len(args) > 2:   # a range of LINKDATA entries (linkdata_jobs)
         linkdata_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:4] == BND2:   # a Criterion Bundle 2 (Need for Speed: Hot Pursuit Remastered's SHADERS.BNDL): GLSLC outputs in its zlib resources (bnd2_shaders)
+        found += bnd2_shaders(open(path, 'rb').read(), '/' + rel)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:3] == b'PAK':   # a Heaps PAK archive (Dead Cells): only its shader cache is read, not its 2 GB of other files (heaps_pak_files, heaps_shaders)
+        with open(path, 'rb') as f:
+            members = heaps_pak_files(f)
+            if members is not None:
+                for nm, off, n in members:
+                    if nm.endswith('/' + HEAPS_CACHE):
+                        f.seek(off); found += heaps_shaders(f.read(n), f'/{rel}{nm}')
+                return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:4] == b'\0\0\2\0' and path.endswith('.gz') and (z := kt_gz(open(path, 'rb').read(), 0x20000)) is not None:   # Ultra Kaiju Monster Rancher's chunked zlib files (128 KB chunks): taken only when the whole file parses as one; anything else reads raw as before
+        kt_shaders(z, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == MTARC:   # an MT Framework archive (mtarc_members): its shader package
         mtarc_shaders(open(path, 'rb').read(), '/' + rel, found)
@@ -1447,6 +1725,7 @@ def scan_file(args):
         for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
+    if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib, before the shader prefilter
     if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC): d = unsized(d, '/' + rel)   # a size-prefixed frame (unsized): Kirby and the Forgotten Land keeps its BNSH in 7,201 .cmp files; read raw, the split found 121 of its 27,297 shaders
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
@@ -1467,6 +1746,8 @@ def uniq_keys(found):
         key = skey(ctl, code)
         if key in uniq and not same_shader(uniq[key][2:4], (ctl, code)): red(f'key {key} is the same but the control section or code area differs ({where})')
         uniq.setdefault(key, (where, st, ctl, code))
+    if SPILL_DIR:   # the payloads go to the spill file: only their places are kept (a phone's memory holds no 73,512 shaders)
+        uniq = {k: (w, s, *spill(c, d, k)) for k, (w, s, c, d) in uniq.items()}
     return uniq
 
 def nso_image(path):
@@ -1480,8 +1761,15 @@ def nso_image(path):
     return bytes(img)
 
 def main():
+    global SPILL_DIR
     romfs_l, main_l, pkg, mapout, factsout = sys.argv[1:6]
     pairsout = sys.argv[6] if len(sys.argv) > 6 else None
+    # The shaders' payloads go to a spill file beside the package (one per process): they are written to the package from there, one shader at a time, so the memory does not grow with the
+    # shader count. The folder goes with the environment, so the pool's children write into their own files (a forked child inherits the parent's, a spawned one reads the environment).
+    # DM_SHADER_SPILL=0 keeps the payloads in memory (a host with room for them; the output is the same either way).
+    SPILL_DIR = '' if os.environ.get('DM_SHADER_SPILL') == '0' else os.path.join(os.path.dirname(os.path.abspath(pkg)), 'payloads')
+    os.environ['DM_SHADER_SPILL_DIR'] = SPILL_DIR
+    check_room()   # too little free memory: stop now, with a clear error, instead of being killed halfway
     # Several versions (base game + update): the RomFS and main arguments are comma-separated and paired one to one; the output is their union (keys are content hashes, shaders shared by versions appear once).
     # The first version's source column is unchanged; later versions are prefixed with their workspace directory name (e.g. v327680): /v327680/Shader/…, main@v327680. They sort after the first version, so existing rows keep their package indices.
     romfs_v, main_v = romfs_l.split(','), main_l.split(',')
@@ -1509,8 +1797,13 @@ def main():
         ued = os.environ.get('DM_UE_SHADERS') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'ue_shaders')
         names = sorted(f for f in os.listdir(ued) if f.endswith('.ushaderbytecode')) if os.path.isdir(ued) else []
         if not names and uepak.unreal_paks(romfs, legacy=False): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
-        for nm in names: found += ue_shaders(open(os.path.join(ued, nm), 'rb').read(), f'/ue_shaders/{nm}')
-        results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
+        for nm in names:
+            # the archive mapped, not read: its shaders are read one by one (FINAL FANTASY RESONANCE's libraries hold 74,244 of them)
+            with open(os.path.join(ued, nm), 'rb') as f:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d: found += ue_shaders(d, f'/ue_shaders/{nm}')
+        uniq = {skey(c, k): (w, s, c, k) for w, s, c, k in found}
+        uniq = {k: (w, s, *spill(c, d, k)) for k, (w, s, c, d) in uniq.items()}   # the payloads to the spill file
+        results.append(('main', uniq, var_pairs(found), {}))
     # DLC content (DM_SPLIT_AOC: a folder holding each DLC's RomFS as <index>/, the NSP script's aoc/) can bring shaders of its own: Xenoblade Chronicles 3's Future Redeemed keeps its models,
     # maps and effects in an archive of its own (aoc/4/bf3_dlc04.ard). Scanned like a version's RomFS, under aoc/<index>/
     aoc = os.environ.get('DM_SPLIT_AOC')
@@ -1557,20 +1850,23 @@ def main():
     os.makedirs(pkg, exist_ok=True)
     for f in os.listdir(pkg):
         if f.endswith('.bin'): os.unlink(os.path.join(pkg, f))
-    recs = collections.defaultdict(list); rows = []; facts = {}; stat = collections.Counter()
-    for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
+    rows = []; facts = {}; stat = collections.Counter(); bins = {}; counts = collections.Counter()
+    for i, key in enumerate(sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k))):   # the same input gives byte-identical output
         where, st, ctl, code = keys[key]
+        ctl, code = payload_get(ctl), payload_get(code)   # from the spill file, one shader at a time
         name = f'{st}_{group(where)}.bin'
         rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
         if rec.find(CTL_MAGIC) != 0x38 + len(code): red(f'key {key}: the control magic appears in the code area, dmsh_build would split the record wrongly')
         if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
-        rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
+        f = bins.get(name)
+        if f is None: f = bins[name] = open(os.path.join(pkg, name), 'wb')
+        rows.append((name, counts[name], STAGE_NAME[st], key, where)); counts[name] += 1; f.write(rec); stat[st] += 1
         if st == 'cs':
             x, y, z = struct.unpack_from('<3I', ctl, 0x748); sh = struct.unpack_from('<I', ctl, 0x754)[0]
             if not x * y * z: red(f'compute shader {key}: control +0x748 thread group is 0 ({where})')
             facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
-    for name, rr in recs.items():
-        with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
+        if not i % 256: check_budget(i, len(keys))
+    for f in bins.values(): f.close()
     with open(mapout, 'w') as f:
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),

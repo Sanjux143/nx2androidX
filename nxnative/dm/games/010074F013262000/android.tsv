@@ -17,4 +17,5 @@ status	wip
 tested	v655360 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.xc3
 orientation	landscape
+graphics	nvn
 env	DM_NVN_ASYNC=1

@@ -20,8 +20,12 @@ import org.json.JSONObject
 class PrefsStore @Inject constructor(@ApplicationContext ctx: Context) {
 
     companion object {
+        // the prefs file's name (the app's own settings, one file)
+        const val NAME = "nx2a"
         // the old app's key, unchanged
         const val KEYS = "keys"
+        // the imported firmware package (a zip): its file name; the unpacked copy is in the app's own folder
+        const val FIRMWARE = "firmware"
         // the old app's global port options: a game without its own config keeps them as the defaults
         const val LEGACY_TOUCH = "touch"
         const val LEGACY_FPS60 = "fps60"
@@ -56,7 +60,7 @@ class PrefsStore @Inject constructor(@ApplicationContext ctx: Context) {
         const val HUD_TEMP_F = "hud.temp.f"
     }
 
-    val prefs: SharedPreferences = ctx.getSharedPreferences("nx2a", Context.MODE_PRIVATE)
+    val prefs: SharedPreferences = ctx.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 
     /** prod.keys 的路径：库的发起前提、设置页、引导都读它；picker 与引导写它（一份，就是这一个） */
     var keys by mutableStateOf(prefs.getString(KEYS, "") ?: "")

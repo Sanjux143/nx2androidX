@@ -5,7 +5,7 @@
 # --release: no debug information, the library stripped, DM_RELEASE defined (the app ignores DM_CTL), outputs in dm/android/out/<title ID>-release.
 # Outputs in <out> (default dm/android/out/<title ID>): dmhost (an executable for adb shell runs: headless, no window) and libdmhost.so (the app's NativeActivity).
 # Objects are rebuilt when a source or a header it includes changed (clang -MMD dependency files).
-import argparse, concurrent.futures as cf, os, re, subprocess, sys
+import argparse, concurrent.futures as cf, os, platform, re, subprocess, sys
 from pathlib import Path
 
 DM = Path(__file__).resolve().parent.parent          # dm/
@@ -28,10 +28,19 @@ a = ap.parse_args()
 if not (a.exe or a.lib or a.play): a.exe = a.lib = True
 
 import platform as _pf, shutil as _sh, stat as _st0
+
+def host_dir(base, tool):
+    """The NDK's host folder for a tool under base. On arm64 Linux the NDK ships x86-64 host tools only, so a folder named linux-aarch64 with an arm64 build of the tool beside the NDK's sysroot
+    (see docs/DEVELOPMENT_GUIDE.md) is used when it holds the tool; otherwise linux-x86_64, as before (an x86_64 machine, or arm64 with qemu-user / box64), so a missing folder fails as it did"""
+    if os.name == 'nt': return 'windows-x86_64'
+    if not sys.platform.startswith('linux'): return 'darwin-x86_64'
+    if _pf.machine().lower() in ('aarch64', 'arm64') and (Path(a.ndk) / base / 'linux-aarch64' / tool).exists(): return 'linux-aarch64'
+    return 'linux-x86_64'
+
+host = host_dir('toolchains/llvm/prebuilt', 'bin/clang')
 # An ARM64 phone (Linux, aarch64): Google's NDK ships host tools for x86-64 only, so the compiler is the
 # phone's own clang (on PATH) and the NDK gives the Android sysroot and the compiler-rt runtime libs.
 NX2A_ARM_HOST = sys.platform.startswith('linux') and _pf.machine().lower() in ('aarch64', 'arm64')
-host = 'windows-x86_64' if os.name == 'nt' else 'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64'
 bin_ = Path(a.ndk) / 'toolchains/llvm/prebuilt' / host / 'bin'
 CC = str(bin_ / ('clang.exe' if os.name == 'nt' else 'clang'))
 if NX2A_ARM_HOST:
@@ -57,8 +66,8 @@ subprocess.run([sys.executable, str(DM / 'games/game.py'), 'header', a.game, str
 subprocess.run([sys.executable, str(DM / 'android/tools/android_profile.py'), 'header', a.game, str(gen / a.game / 'android_profile.h')], check=True)
 
 # the backend's own small shaders (dm/android/shaders): compiled with the NDK's glslc, embedded as gen/<name>_<stage>.spv.h
-GLSLC = Path(a.ndk) / 'shader-tools' / host / ('glslc.exe' if os.name == 'nt' else 'glslc')
-if NX2A_ARM_HOST:   # the NDK's shader-tools are host binaries for x86-64: the phone's own glslc
+GLSLC = Path(a.ndk) / 'shader-tools' / host_dir('shader-tools', 'glslc') / ('glslc.exe' if os.name == 'nt' else 'glslc')
+if NX2A_ARM_HOST and host_dir('shader-tools', 'glslc') != 'linux-aarch64':   # the NDK's shader-tools are host binaries for x86-64: the phone's own glslc
     _glslc = _sh.which('glslc')
     if not _glslc: sys.exit('aarch64 host: glslc not found (install the shaderc tools, or put glslc on PATH)')
     GLSLC = Path(_glslc)

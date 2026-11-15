@@ -55,6 +55,14 @@ class EnvCheckState @Inject constructor(
     var known by mutableStateOf(false); private set
 
     /**
+     * The machine's firmware has been imported.
+     *
+     * It is optional (only a game that reads the console's system data needs it), so a missing one only
+     * colours the chip amber: the app works without it.
+     */
+    var firmwareImported by mutableStateOf(true); private set
+
+    /**
      * The chip's verdict: the two cheap facts and the child-process limit's state.
      *
      * It is read out of the facts instead of being kept, because the limit's state arrives later than the
@@ -63,7 +71,7 @@ class EnvCheckState @Inject constructor(
      */
     val chip: EnvCheck.Chip
         get() = if (!known) EnvCheck.Chip.CHECKING
-        else EnvCheck.chip(envReady, keysOk, if (phantomKnown) phantom else null)
+        else EnvCheck.chip(envReady, keysOk, if (phantomKnown) phantom else null, firmwareImported)
 
     /** The doctor is running */
     var running by mutableStateOf(false); private set
@@ -86,11 +94,12 @@ class EnvCheckState @Inject constructor(
     /** A read of the limit is running: another one does not start */
     @Volatile private var phantomReading = false
 
-    /** Reads the two facts again */
+    /** Reads the facts again */
     fun refresh() {
         envReady = env.ready
         keysPath = prefs.keys
         keysOk = keysPath.isNotBlank() && File(keysPath).isFile()
+        firmwareImported = prefs.str(PrefsStore.FIRMWARE).isNotBlank()
         known = true
         refreshPhantom()
     }

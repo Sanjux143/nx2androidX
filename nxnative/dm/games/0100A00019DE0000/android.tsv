@@ -9,3 +9,4 @@ status	playable
 tested	v655360 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.hades2
 orientation	landscape
+graphics	nvn

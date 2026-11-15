@@ -2,6 +2,8 @@ package com.nx.android.data
 
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -15,6 +17,9 @@ import com.nx.android.domain.saves.SAVE_PACKAGE_EXTENSION
  * given the app's files folder and the title ID) - so the panel can work on it directly: no request file for
  * the host, no game start. A package holds the save's files as they are, the layout a console's save tools
  * write and read, under one folder; the device save of a game that mounts one lies beside it.
+ *
+ * The package travels as a stream: it is written where the player says (the file manager) and read from
+ * where he picked it. The stream belongs to the caller of these functions - it is closed when they return.
  */
 object SaveBackup {
 
@@ -67,18 +72,10 @@ object SaveBackup {
      * The package: the save tree under `treeName/`, the device save under `treeName.device/` when the game has
      * one. The files are copied byte for byte.
      */
-    fun writePackage(main: File?, device: File?, treeName: String, dest: File) {
-        dest.parentFile?.mkdirs()
-        val part = File(dest.parentFile, ".${dest.name}.part")
-        part.delete()
-        ZipOutputStream(part.outputStream().buffered()).use { zip ->
+    fun writePackage(main: File?, device: File?, treeName: String, out: OutputStream) {
+        ZipOutputStream(out.buffered()).use { zip ->
             if (main != null) writeTree(zip, main, treeName)
             if (device != null) writeTree(zip, device, "$treeName.device")
-        }
-        if (dest.exists()) dest.delete()
-        if (!part.renameTo(dest)) {
-            part.copyTo(dest, overwrite = true)
-            part.delete()
         }
     }
 
@@ -103,19 +100,19 @@ object SaveBackup {
     class Package(val tree: File, val device: File?)
 
     /**
-     * Unpack a package into `dest`: the save tree it holds and the device save beside it. A package from
-     * elsewhere is not trusted - an entry whose path points out of `dest` is refused, and the unpacked size
-     * is capped.
+     * Unpack a package from `source` into `dest`: the save tree it holds and the device save beside it. A
+     * package from elsewhere is not trusted - an entry whose path points out of `dest` is refused, and the
+     * unpacked size is capped.
      *
      * A package that holds no file at all is refused as well: it is not a save package (a broken zip, a text
      * file with the right name), and importing it would replace the player's save with nothing.
      */
-    fun unpack(pkg: File, dest: File): Package {
+    fun unpack(source: InputStream, dest: File): Package {
         dest.mkdirs()
         var bytes = 0L
         var entries = 0
         var files = 0
-        ZipInputStream(pkg.inputStream().buffered()).use { zip ->
+        ZipInputStream(source.buffered()).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
                 entries++
@@ -153,36 +150,6 @@ object SaveBackup {
                 Package(merged, devices.firstOrNull())
             }
         }
-    }
-
-    /**
-     * The save an import replaces: a copy in the data pack's `saves/` folder, named as the native save manager
-     * names its own (`<stamp>-before-import`). Null when the game has not saved yet.
-     */
-    fun backup(live: File, device: File?, packSaves: File, stamp: String): File? {
-        val files = live.listFiles() ?: return null
-        val dev = device?.takeIf { it.isDirectory && it.listFiles()?.isNotEmpty() == true }
-        if (files.isEmpty() && dev == null) return null
-        packSaves.mkdirs()
-        val dir = File(packSaves, "$stamp-before-import")
-        val deviceDir = File(packSaves, "$stamp-before-import.device")
-        val stage = File(packSaves, ".$stamp-before-import.part")
-        val deviceStage = File(packSaves, ".$stamp-before-import.device.part")
-        stage.deleteRecursively(); deviceStage.deleteRecursively()
-        try {
-            copyTree(live, stage)
-            if (dev != null) copyTree(dev, deviceStage)
-            if (dir.exists() && !dir.deleteRecursively()) throw IOException("Could not replace save backup")
-            if (deviceDir.exists() && !deviceDir.deleteRecursively()) throw IOException("Could not replace device backup")
-            if (!stage.renameTo(dir)) throw IOException("Could not finish save backup")
-            if (deviceStage.isDirectory && !deviceStage.renameTo(deviceDir)) {
-                dir.deleteRecursively()
-                throw IOException("Could not finish device save backup")
-            }
-        } finally {
-            stage.deleteRecursively(); deviceStage.deleteRecursively()
-        }
-        return dir
     }
 
     /**
@@ -258,13 +225,12 @@ object SaveBackup {
      * The package of the live save, written into `dest` (the name it gets there is free); null when the game
      * has not saved yet. The tree in the package is named after the package.
      */
-    fun export(live: File, device: File?, dest: File): File? {
+    fun export(live: File, device: File?, treeName: String, out: OutputStream): Boolean {
         val main = live.takeIf { it.isDirectory && it.listFiles()?.isNotEmpty() == true }
         val dev = device?.takeIf { it.isDirectory && it.listFiles()?.isNotEmpty() == true }
-        if (main == null && dev == null) return null
-        val free = freeName(dest)
-        writePackage(main, dev, free.name.removeSuffix(".$EXT"), free)
-        return free
+        if (main == null && dev == null) return false
+        writePackage(main, dev, treeName, out)
+        return true
     }
 
     /** a package name that is not taken yet (two exports in the same second would share one name) */

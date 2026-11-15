@@ -1,5 +1,8 @@
 """Runtime updates rebuild the runtime with the profile that made the pack, and refuse one that does not match."""
+import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -71,8 +74,8 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
             'host': 'host/libdmplay.so', 'host_front': 2, 'player_api_revision': 0, 'profile_h': fingerprint}))
         self.before['nx2a-data.json'] = self.manifest.read_bytes()   # the manifest the test wrote is the baseline
 
-    def rebuild(self):
-        return runtime_update.rebuild(self.pack, no_lsfg=True, jobs=1, emit=lambda _: None)
+    def rebuild(self, allow_drift=False):
+        return runtime_update.rebuild(self.pack, no_lsfg=True, jobs=1, allow_profile_drift=allow_drift, emit=lambda _: None)
 
     def assert_preserved(self, manifest=True):
         for name, data in self.before.items():
@@ -112,6 +115,36 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
             self.rebuild()
         self.assert_preserved()
         self.assertEqual(list(self.pack.glob('.runtime-*')), [])
+
+    def test_a_changed_profile_is_rebuilt_with_the_current_profile_when_the_player_asks_for_it(self):
+        current = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
+        self.record(hashlib.sha256(b'a profile from an earlier port').hexdigest())
+        said = []
+        result = runtime_update.rebuild(self.pack, no_lsfg=True, jobs=1, allow_profile_drift=True, emit=said.append)
+        self.assertEqual(result['data'], str(self.pack.resolve()))
+        updated = json.loads(self.manifest.read_text())
+        self.assertEqual(updated['profile_h'], current)   # the manifest names the profile it was built from now
+        self.assertTrue(any('Rebuilding the runtime with the current profile' in line for line in said))
+        self.assert_preserved(manifest=False)
+
+    def test_no_profile_anywhere_is_refused_even_when_the_player_asks_for_it(self):
+        self.record(hashlib.sha256(b'effective game profile with adjusted memory').hexdigest())
+        with self.assertRaisesRegex(ValueError, 'No game profile for this game'):
+            self.rebuild(allow_drift=True)
+        self.assert_preserved()
+
+    def test_the_drift_is_reported_as_an_event_the_app_can_act_on(self):
+        from porter import cli
+        args = argparse.Namespace(pack=str(self.pack), progress='json', no_lsfg=True, jobs=1,
+                                  allow_profile_drift=False)
+        with patch.object(runtime_update, 'rebuild',
+                          side_effect=runtime_update.ProfileDrift('The game profile changed since this pack was built.')):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_rebuild_runtime(args)
+        self.assertEqual(code, 1)
+        events = [json.loads(line) for line in out.getvalue().splitlines() if line.startswith('{')]
+        self.assertTrue(any(event.get('ev') == 'profile-drift' for event in events), events)
 
     def test_no_profile_anywhere_is_refused_before_compilation(self):
         self.record(hashlib.sha256(b'effective game profile with adjusted memory').hexdigest())

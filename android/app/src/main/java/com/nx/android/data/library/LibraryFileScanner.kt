@@ -88,7 +88,9 @@ object LibraryFileScanner {
                       status = man.optString("status"),
                       playerApiRevision = (man.opt("player_api_revision") as? Int)?.takeIf { it > 0 } ?: 0,
                       display = man.optString("display"),
-                      romfsAt = man.optString("romfs_at"))
+                      romfsAt = man.optString("romfs_at"),
+                      graphics = man.optString("graphics"),
+                      lan = if (man.has("lan")) man.getBoolean("lan") else null)
     }
 
     /**

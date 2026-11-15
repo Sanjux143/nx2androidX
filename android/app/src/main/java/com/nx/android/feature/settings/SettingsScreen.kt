@@ -56,6 +56,8 @@ import com.nx.android.app.AppActions
 import com.nx.android.core.ui.LocalAppLocale
 import com.nx.android.core.ui.components.ActionRow
 import com.nx.android.core.ui.components.ChoiceRow
+import com.nx.android.core.ui.components.FirmwareHint
+import com.nx.android.core.ui.components.FirmwareRow
 import com.nx.android.core.ui.components.Hint
 import com.nx.android.core.ui.components.InfoRow
 import com.nx.android.core.ui.components.NoteRow
@@ -67,6 +69,8 @@ import com.nx.android.core.ui.components.SubtitleRow
 import com.nx.android.core.ui.components.rememberPageScroll
 import com.nx.android.core.ui.components.step
 import com.nx.android.core.ui.failureText
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.theme.NxPalette
 import com.nx.android.feature.updates.UpdateCheckRow
 import com.nx.android.feature.updates.openRepo
@@ -106,10 +110,14 @@ fun SettingsScreen(ob: OnboardingState, drivers: List<Driver>, driverRepository:
                    onDrivers: () -> Unit,
                    section: SettingsSection, onSelectSection: (SettingsSection) -> Unit,
                    onDiagnosticLog: () -> Unit,
-                   onClose: () -> Unit) {
+                   onClose: () -> Unit, navActive: Boolean = false) {
     val scroll = rememberPageScroll()
     LaunchedEffect(section) { scroll.scrollTo(0) }
     BackHandler { onClose() }
+    // 手柄的返回键：跟系统的返回键一条路（这一页只做「能关掉」）
+    OnNavKey(enabled = navActive) { key ->
+        if (key == NavKey.Back) onClose()
+    }
 
     // 它是一页，不是一个浮在上面的东西：整块盖住，连边框圆角都不留
     Box(Modifier.fillMaxSize().background(NxPalette.Surface)) {
@@ -227,6 +235,16 @@ private fun EnvironmentSection(ob: OnboardingState, actions: AppActions, onReque
         enabled = !ob.unpacking,
     ) { confirmReset = true }
     KeysRow(actions, onRequest)
+    // 固件：整机级的一份（可选）。导入 zip 解到 App 的私有目录，移植时统一带给移植器
+    FirmwareRow(
+        imported = actions.firmware(),
+        onImport = {
+            onRequest(PickerRequest(PickerMode.FILE, setOf("zip"), null, locale.str(R.string.fw_pick),
+                onPicked = { f -> actions.onImportFirmware(f) }))
+        },
+        onClear = { actions.onClearFirmware() },
+    )
+    FirmwareHint()
     ActionRow(title = stringResource(R.string.settings_diagnostic_log), label = stringResource(R.string.builds_log_view),
         onClick = onDiagnosticLog)
     ActionRow(title = stringResource(R.string.settings_diagnostic_log), label = stringResource(R.string.common_share),

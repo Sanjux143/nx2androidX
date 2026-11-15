@@ -3,4 +3,5 @@
 # (gfx_vk_tex.c), else the translucent UI comes out yellow and white. On the AYN Thor (Adreno 740, Turnip 27.0.0-R2), version 1.5.1: the initial settings,
 # the title and the prologue's first battle draw right at 60 fps. Not played further yet.
 status	experimental
+graphics	nvn
 env	DM_VK_UBWC=7

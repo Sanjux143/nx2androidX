@@ -6,8 +6,11 @@
 #   package      the app's package name (default org.nx2a.t<title ID in lowercase>: a package name's parts start with a letter)
 #   orientation  landscape (default) | any
 #   requires     device features, separated by spaces: bcn (BC texture compression)
-#   sysdata      system data titles the game reads from the console's firmware, 16-digit hex title IDs separated by spaces (0100000000000802: MiiModel, the Mii heads Mario Kart 8 Deluxe builds);
-#                porter extracts each from the player's firmware dump (--firmware) into the data pack, and the host mounts it in place of its stand-in
+#   graphics     the graphics API the game itself uses: vulkan | gl | nvn (empty when it is not known);
+#                gl means the game draws with OpenGL ES: the phone's own driver draws it, a Vulkan game needs the replay
+#   lan          1 when the game can be played over the local network with several devices (empty: not known)
+#   sysdata      system data titles the game reads from the console's firmware, 16-digit hex title IDs separated by spaces (0100000000000802: MiiModel, the Mii heads Mario Kart 8 Deluxe builds; 0100000000000811 and 0100000000000810: the shared fonts, standard and Nintendo extension);
+#                porter extracts each from the player's firmware dump (--firmware) into the data pack, and the host mounts it in place of its stand-in (the fonts: the host decodes them)
 #   setting      <name>=<value>, one row each: the pause menu's defaults on first launch (overlay, rumble, docked, fps, opacity: 20..80 by 5)
 #   env          <KEY>=<VALUE>, one row each: host switches the game needs on Android (the data pack's env.txt)
 #   overlay      <tablet|phone> <control> <x> <y>: moves one control of that layout (dm/android/overlay_default.tsv) to x, y as fractions of the window
@@ -27,8 +30,9 @@ STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'),   # the pause menu's settings (front_player.c settings_load)
             'opacity': tuple(str(v) for v in range(20, 81, 5))}                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
 REQUIRES = ('bcn',)
+GRAPHICS = ('vulkan', 'gl', 'nvn')
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'graphics', 'lan')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -96,6 +100,12 @@ class AndroidProfile:
     def sysdata(self): return [int(t, 16) for t in self.get('sysdata').split()]   # title IDs
 
     @property
+    def graphics(self): return self.get('graphics', '')   # 'vulkan' | 'gl' | 'nvn' ('' when it is not known)
+
+    @property
+    def lan(self): return self.get('lan') == '1'   # playable over the local network with several devices
+
+    @property
     def settings(self):   # {'overlay': '1', ...}: the defaults the data pack's settings.txt starts with
         return dict(v.split('=', 1) for v in self.values('setting'))
 
@@ -118,6 +128,8 @@ class AndroidProfile:
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         bad += [f'requires {r!r}: one of {", ".join(REQUIRES)}' for r in self.requires if r not in REQUIRES]
         bad += [f'sysdata {t!r}: a 16-digit hex title ID' for t in self.get('sysdata').split() if not re.fullmatch(r'[0-9A-Fa-f]{16}', t)]
+        if self.graphics and self.graphics not in GRAPHICS: bad.append(f'graphics {self.graphics!r}: one of {", ".join(GRAPHICS)}')
+        if self.get('lan') and self.get('lan') not in ('0', '1'): bad.append('lan: 1 or 0')
         for v in self.values('setting'):
             k, eq, val = v.partition('=')
             if not eq or k not in SETTINGS or val not in SETTINGS[k]: bad.append(f'setting {v!r}: ' + ', '.join(f'{n}={"|".join(vs)}' for n, vs in SETTINGS.items()))

@@ -18,6 +18,7 @@ typedef struct {
     int32_t source;    // AINPUT_SOURCE_* (a key: the KeyEvent's source; motion: the MotionEvent's)
     int32_t device;    // the input device's id
     int32_t key_code, key_action, key_meta, key_repeat;   // a key event
+    int32_t key_scan;  // the key's physical scan code (0: none): the same button has the same code on every phone
     int32_t action;    // motion: getAction() as Java carries it (the mask and the pointer index in place)
     int32_t pointers;  // motion: how many ptr[] entries hold this snapshot
     struct { int32_t id; float x, y; } ptr[16];
@@ -26,6 +27,10 @@ typedef struct {
 
 // the shared core, driven from the player (jni_android.c's JNI surface: Java class com.nx.android.game.Native)
 int dm_java_input(const dm_java_event *e);      // one event into the game (1 consumed, as handle_event returns)
+// the controllers' own table (the app's gamepad center pushes it: pad_map.h's line format) and the release of every key
+// (the center mutes the input while it is open: a key the player held when it opened must not stay pressed in the game)
+void dm_pad_mapping_set(const char *spec);
+void dm_pad_release_all(void);
 void dm_java_window_take(ANativeWindow *w);     // the app's Surface is here (the reference passes over)
 void dm_java_window_drop(void);                 // it is going: the swapchain is destroyed before this returns
 void dm_java_lifecycle(int ev);                 // 0 pause, 1 resume, 2 window focus, 3 window unfocus

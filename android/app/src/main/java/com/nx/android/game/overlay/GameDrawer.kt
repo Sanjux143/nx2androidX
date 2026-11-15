@@ -9,6 +9,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,12 +36,15 @@ import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Thermostat
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -64,6 +68,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nx.android.R
@@ -74,6 +79,8 @@ import com.nx.android.data.RatePin
 import com.nx.android.game.hud.HudField
 import com.nx.android.game.Native
 import com.nx.android.game.input.PadStyle
+import com.nx.android.input.GamepadScan
+import com.nx.android.input.PadAssignment
 import com.nx.android.core.ui.components.CapsuleButton
 import com.nx.android.core.ui.components.Hint
 import com.nx.android.core.ui.components.QuietButton
@@ -81,15 +88,16 @@ import com.nx.android.core.ui.theme.GlassSheet
 import com.nx.android.core.ui.theme.NxPalette
 import kotlinx.coroutines.delay
 
-/** 抽屉的四个标签页（存档的导出与导入在库页的抽屉里，这里不再有） */
+/** 抽屉的标签页（存档的导出与导入在库页的抽屉里，这里不再有） */
 enum class DrawerTab(@StringRes val label: Int) {
     PERF(R.string.drawer_tab_perf), HUD(R.string.drawer_tab_hud),
-    FRAMEGEN(R.string.drawer_tab_framegen), CONTROLS(R.string.drawer_tab_controls)
+    FRAMEGEN(R.string.drawer_tab_framegen), CONTROLS(R.string.drawer_tab_controls),
+    AUDIO(R.string.drawer_tab_audio), PLAYERS(R.string.drawer_tab_players)
 }
 
 /**
  * 游戏内抽屉（:play 进程自己的 UI）：虚拟手柄的菜单按钮、物理手柄菜单键或系统返回手势唤出，
- * 玻璃卡样式与应用一致，四个标签页（性能 / HUD / 插帧 / 操作）+ 底部动作行。
+ * 玻璃卡样式与应用一致，五个标签页（性能 / HUD / 插帧 / 操作 / 音频）+ 底部动作行。
  *
  * 帧率档位与帧生成即改即生效（JNI）；手柄的显示与浓淡是 App 自己的偏好（唯一真值），其余是宿主自己的设置
  * （震动、底座模式，即改即生效并存进包的 settings.txt）。宿主不再画任何面板：没有暂停菜单、
@@ -108,6 +116,9 @@ fun GameDrawer(
     onOpenChange: (Boolean) -> Unit,
     settings: FrameGenSettings?,
     onRatePin: (RatePin) -> Unit,
+    motion: () -> Int,
+    motionHasGyro: Boolean,
+    onMotion: (Boolean, Boolean) -> Unit,
     padShown: () -> Boolean,
     onPadShown: (Boolean) -> Unit,
     padOpacity: () -> Int,
@@ -122,6 +133,9 @@ fun GameDrawer(
     onHudFields: (Set<HudField>) -> Unit,
     hudFahrenheit: () -> Boolean,
     onHudFahrenheit: (Boolean) -> Unit,
+    pads: () -> List<GamepadScan.Info>,
+    players: () -> PadAssignment,
+    onPlayers: (PadAssignment) -> Unit,
     onLayoutEditor: () -> Unit,
     onResetPadLayout: () -> Unit,
     onPauseGame: () -> Unit,
@@ -140,10 +154,34 @@ fun GameDrawer(
                 // 宿主有没有帧率档位这个入口：老包里的旧宿主没有，调用会抛 UnsatisfiedLinkError——
                 // 那就整个不显示（玩家不该点一个按不动的开关）
                 val rateSupported = remember { runCatching { Native.perfPinGet() }.isSuccess }
+                // 体感（设备的转动带动六轴传感器）：老宿主也没有这个入口，整组不显示
+                val motionSupported = remember { runCatching { Native.motionGet() }.isSuccess }
+                var motionState by remember { mutableIntStateOf(if (motionSupported) motion() else 0) }
+                // 音频输出与 GPU 提频：老宿主也没有这两个入口（调用会抛 UnsatisfiedLinkError）——整行不显示
+                val audioGet = remember { runCatching { Native.audioGet() } }
+                val audioSupported = audioGet.isSuccess
+                var audioId by remember { mutableIntStateOf(if (audioSupported) audioGet.getOrDefault(0) else 0) }
+                val turboGet = remember { runCatching { Native.gpuTurboGet() } }
+                val turboSupported = turboGet.isSuccess
+                var turboMode by remember { mutableStateOf(if (turboSupported) GpuTurbo.normalize(turboGet.getOrNull()) else GpuTurbo.OFF) }
+                // 系统现在有的输出设备：插上耳机就多一个，所以边开边读
+                val context = LocalContext.current
+                var audioDevices by remember { mutableStateOf(emptyList<AudioOutput>()) }
+                // 手柄：插上拔下要看得见（玩家页指着它们指派）
+                var pads by remember { mutableStateOf(emptyList<GamepadScan.Info>()) }
+                var tick by remember { mutableIntStateOf(0) }
                 LaunchedEffect(open) {   // 打开期间 2 Hz 轮询宿主的状态串与帧率档位
                     while (open) {
                         runCatching { status = Native.frameGenStatus() }
                         if (rateSupported) runCatching { ratePin = Native.perfPinGet() }
+                        if (motionSupported) runCatching { motionState = motion() }
+                        if (audioSupported) runCatching { audioId = Native.audioGet() }
+                        if (turboSupported) runCatching { turboMode = GpuTurbo.normalize(Native.gpuTurboGet()) }
+                        // 设备列表：两秒读一次（插拔耳机要看得见）
+                        if (audioSupported && tick % 4 == 0) runCatching { audioDevices = audioOutputDevices(context) }
+                        // 手柄列表：每次都读（插上手柄要立刻看得见）
+                        runCatching { pads = pads() }
+                        tick++
                         delay(500)
                     }
                 }
@@ -155,7 +193,12 @@ fun GameDrawer(
                     GlassSheet(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
                         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
                             var tab by remember { mutableIntStateOf(0) }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // 六个页签放不下就横着滚（标签挤成两行最难看）
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            ) {
                                 for ((i, t) in DrawerTab.entries.withIndex()) {
                                     val selected = tab == i
                                     Box(
@@ -173,14 +216,27 @@ fun GameDrawer(
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 when (DrawerTab.entries[tab]) {
-                                    // 性能页：帧率档位与底座模式（两个都是性能取舍，与帧生成无关）
-                                    DrawerTab.PERF -> PerfRows(ratePin, onRatePin, rateSupported)
+                                    // 性能页：帧率档位、GPU 提频与底座模式（都是性能取舍，与帧生成无关）
+                                    DrawerTab.PERF -> PerfRows(ratePin, onRatePin, rateSupported,
+                                        turboSupported, turboMode, { mode -> turboMode = mode; Native.gpuTurboSet(mode) })
                                     DrawerTab.HUD -> HudRows(hudStats, onHudStats, hudDevice, onHudDevice,
                                         hudFields, onHudFields, hudFahrenheit, onHudFahrenheit)
                                     DrawerTab.FRAMEGEN -> if (settings == null) HintRow(stringResource(R.string.drawer_no_framegen))
                                         else FrameGenRows(settings, status)
                                     DrawerTab.CONTROLS -> ControlRows(padShown, onPadShown, padOpacity, onPadOpacity,
-                                        padStyle, onPadStyle, onLayoutEditor, onResetPadLayout)
+                                        padStyle, onPadStyle, onLayoutEditor, onResetPadLayout,
+                                        motionSupported, { motionState }, motionHasGyro,
+                                        onMotion = { on, raw ->
+                                            onMotion(on, raw)
+                                            // 即时反馈：开关的显示别等下一轮轮询（宿主的 env 已经改了）
+                                            motionState = (if (on) 1 else 0) or (if (raw) 2 else 0)
+                                        },
+                                        )
+                                    // 音频页：声音走哪个设备（宿主换了流，即时出声）
+                                    DrawerTab.AUDIO -> AudioRows(audioSupported, audioId, audioDevices,
+                                        onPick = { id -> audioId = id; Native.audioSet(id) })
+                                    // 玩家页：谁玩谁（这个游戏里哪只手柄是几号玩家）
+                                    DrawerTab.PLAYERS -> PlayerRows(pads, players, onPlayers)
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
@@ -219,20 +275,20 @@ private fun ExitButton(text: String, onClick: () -> Unit, modifier: Modifier = M
 }
 
 @Composable
-private fun HintRow(text: String) {
+internal fun HintRow(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /** 分组的小标题：页里的东西按组走，一眼能扫 */
 @Composable
-private fun GroupLabel(text: String) {
+internal fun GroupLabel(text: String) {
     Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
          fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
 }
 
 /** 一行：图标 + 标题 + 小字提示 + 控件 */
 @Composable
-private fun DrawerRow(
+internal fun DrawerRow(
     icon: ImageVector,
     title: String,
     hint: String? = null,
@@ -254,7 +310,7 @@ private fun DrawerRow(
 
 /** 一行：图标 + 标题 + 小字提示 + 药丸开关（App 自己的那套）。enabled=false 时开关灰着，按不动 */
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     icon: ImageVector, title: String, hint: String? = null,
     checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit,
 ) {
@@ -279,7 +335,7 @@ private fun ToggleRow(
 
 /** 一行：图标 + 标题 + 小字提示 + 展开的箭头（点了去某个地方） */
 @Composable
-private fun ActionRow(
+internal fun ActionRow(
     icon: ImageVector, title: String, hint: String? = null,
     onClick: () -> Unit,
 ) {
@@ -346,11 +402,12 @@ private fun HudRows(
 }
 
 /**
- * 性能页：帧率档位（钉住呈现的那一档）与底座模式（更清晰的画面，更耗电）。
- * 宿主那边每 30 帧重读一次档位，所以改档即时生效；底座模式是宿主自己的设置，即改即生效。
+ * 性能页：帧率档位（钉住呈现的那一档）、GPU 提频与底座模式（更清晰的画面，更耗电）。
+ * 宿主那边每 30 帧重读一次档位、每 60 个 present 重读一次提频，所以改完即时生效；底座模式是宿主自己的设置，即改即生效。
  */
 @Composable
-private fun PerfRows(pin: Int, onPick: (RatePin) -> Unit, rateSupported: Boolean) {
+private fun PerfRows(pin: Int, onPick: (RatePin) -> Unit, rateSupported: Boolean,
+                      turboSupported: Boolean, turboMode: String, onTurbo: (String) -> Unit) {
     if (rateSupported) {
         GroupLabel(stringResource(R.string.drawer_group_rate))
         // 选项的词先取好：回调里不能取词
@@ -363,12 +420,37 @@ private fun PerfRows(pin: Int, onPick: (RatePin) -> Unit, rateSupported: Boolean
         Spacer(Modifier.height(4.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     }
+    // GPU 提频：老宿主没有这个入口，整组不显示
+    if (turboSupported) {
+        GroupLabel(stringResource(R.string.drawer_group_clock))
+        val labels = turboLabels()
+        OptionRow(Icons.Filled.Bolt, stringResource(R.string.drawer_gpu_turbo), labels, turboLabel(turboMode, labels)) { name ->
+            val i = labels.indexOf(name)
+            onTurbo(GpuTurbo.MODES.getOrNull(i) ?: GpuTurbo.OFF)
+        }
+        Hint(stringResource(R.string.drawer_gpu_turbo_hint))
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    }
     GroupLabel(stringResource(R.string.drawer_group_picture))
     var docked by remember { mutableStateOf(Native.menuGet(4) != 0) }
     ToggleRow(Icons.Filled.Tv, stringResource(R.string.drawer_docked), stringResource(R.string.drawer_docked_hint), docked) {
         docked = it; Native.menuSet(4, if (it) 1.0 else 0.0)
     }
 }
+
+/** 提频三档的词（顺序与 GpuTurbo.MODES 一致） */
+@Composable
+private fun turboLabels() = listOf(
+    stringResource(R.string.drawer_gpu_turbo_off),
+    stringResource(R.string.drawer_gpu_turbo_on),
+    stringResource(R.string.drawer_gpu_turbo_auto),
+)
+
+/** 当前提频档的词（宿主不认得的值就是关） */
+@Composable
+private fun turboLabel(mode: String, labels: List<String>) =
+    labels.getOrNull(GpuTurbo.MODES.indexOf(GpuTurbo.normalize(mode))) ?: labels[0]
 
 /** 档位的选项：跟随游戏在前，后面是宿主的三档（顺序与 RatePin.PINS 一致） */
 @Composable
@@ -387,6 +469,10 @@ private fun ControlRows(
     padStyle: () -> PadStyle, onPadStyle: (PadStyle) -> Unit,
     onLayoutEditor: () -> Unit,
     onResetPadLayout: () -> Unit,
+    motionSupported: Boolean,
+    motion: () -> Int,
+    motionHasGyro: Boolean,
+    onMotion: (Boolean, Boolean) -> Unit,
 ) {
     var shown by remember { mutableStateOf(padShown()) }
     var opacity by remember { mutableStateOf(padOpacity()) }
@@ -411,6 +497,114 @@ private fun ControlRows(
     Spacer(Modifier.height(4.dp))
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     ToggleRow(Icons.Filled.Vibration, stringResource(R.string.drawer_rumble), null, rumble) { rumble = it; Native.menuSet(2, if (it) 1.0 else 0.0) }
+    // 体感：设备的转动带动游戏里的六轴传感器（王国之泪的弓）。宿主是唯一真源（档案的 env.txt 也可能写它），
+    // 改完即时下发；老宿主没有这个入口，整组不显示。
+    if (motionSupported) {
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        GroupLabel(stringResource(R.string.drawer_group_motion))
+        val state = motion()
+        val on = state and 1 != 0
+        val raw = state and 2 != 0
+        ToggleRow(Icons.Filled.ScreenRotation, stringResource(R.string.motion_on),
+            if (motionHasGyro) null else stringResource(R.string.motion_no_gyro), on, enabled = motionHasGyro) {
+            onMotion(!on, raw)
+        }
+        ToggleRow(Icons.Filled.TouchApp, stringResource(R.string.motion_raw), stringResource(R.string.motion_raw_note), raw) {
+            onMotion(on, !raw)
+        }
+    }
+}
+
+/**
+ * 玩家页：谁玩谁（这个游戏里哪只手柄是几号玩家）。
+ *
+ * 玩家 1 永远是手机：触屏的虚拟按键与手机的体感都是它的，它再接手柄。默认「自动」——
+ * **没被指派走的手柄都算玩家 1**（跟今天一样：单人游戏插两只手柄都能玩）；也可以锁死某一只，
+ * 别的就闲置了（按了没人管）。玩家 2~4 各自一只手柄，也可以空着。
+ * 一只手柄只能属于一个玩家：把它指派给谁，它就从原来那个人手里挪走。
+ */
+@Composable
+private fun PlayerRows(
+    pads: List<GamepadScan.Info>,
+    players: () -> PadAssignment,
+    onAssign: (PadAssignment) -> Unit,
+) {
+    // 指派在抽屉里自己先改（画面的即时反馈），再存下发
+    var assignment by remember { mutableStateOf(players()) }
+    GroupLabel(stringResource(R.string.drawer_group_players))
+    val auto = stringResource(R.string.drawer_player_auto)
+    val none = stringResource(R.string.drawer_player_none)
+    // 同型号的两只分不清：名字后面加设备号（跟手柄中心一样）
+    val repeats = pads.groupingBy { it.name }.eachCount()
+    val labels = pads.map { if ((repeats[it.name] ?: 0) > 1) "${it.name} · ${it.id}" else it.name }
+    for (player in 0..3) {
+        val key = assignment.padOf(player)
+        val options = listOf(if (player == 0) auto else none) + labels
+        val index = pads.indexOfFirst { it.profileKey == key }
+        val current = when {
+            key.isEmpty() && player == 0 -> auto
+            key.isEmpty() -> none
+            index < 0 -> key   // 那只手柄现在没接着：还是记着它（插回来还是这个玩家）
+            else -> labels[index]
+        }
+        OptionRow(Icons.Filled.SportsEsports, stringResource(R.string.drawer_player_n, player + 1),
+            options, current, width = 170.dp) { picked ->
+            val i = options.indexOf(picked)
+            val next = assignment.assign(player, if (i <= 0) "" else pads[i - 1].profileKey)
+            assignment = next
+            onAssign(next)
+        }
+    }
+    HintRow(stringResource(R.string.drawer_players_note))
+}
+
+/**
+ * 音频页：游戏的声音走哪个设备（蓝牙耳机、USB 声卡……）。
+ * 宿主那边换过去即刻出声（共享的音频后端把在播的流停掉、在新设备上重启），不用重启游戏。
+ * 老宿主没有这个入口（老包），这一页给一句话说明，别留一个空页。
+ */
+@Composable
+private fun AudioRows(supported: Boolean, current: Int, devices: List<AudioOutput>, onPick: (Int) -> Unit) {
+    if (!supported) {
+        HintRow(stringResource(R.string.drawer_audio_unsupported))
+        return
+    }
+    GroupLabel(stringResource(R.string.drawer_group_audio))
+    AudioRow(current, devices, onPick)
+}
+
+/**
+ * 声音输出这一行：第一个是「跟随系统」，后面是系统现在有的设备（蓝牙用自己的产品名）。
+ * 下拉比别的行宽一点：设备的名字有长有短（蓝牙耳机的名字是系统给的）。
+ */
+@Composable
+private fun AudioRow(current: Int, devices: List<AudioOutput>, onPick: (Int) -> Unit) {
+    val labels = audioLabels(devices)
+    val ids = listOf(AUDIO_FOLLOW_SYSTEM) + devices.map { it.id }
+    val index = ids.indexOf(current).let { if (it < 0) 0 else it }
+    OptionRow(Icons.AutoMirrored.Filled.VolumeUp, stringResource(R.string.drawer_audio_output), labels, labels[index], width = 220.dp) { name ->
+        val i = labels.indexOf(name)
+        if (i >= 0) onPick(ids[i])
+    }
+}
+
+/** 设备的词：跟随系统 + 每个设备的说法（外接设备带自己的名字） */
+@Composable
+private fun audioLabels(devices: List<AudioOutput>): List<String> {
+    val follow = stringResource(R.string.drawer_audio_follow)
+    val speaker = stringResource(R.string.drawer_audio_speaker)
+    val wired = stringResource(R.string.drawer_audio_wired)
+    val bluetooth = stringResource(R.string.drawer_audio_bluetooth)
+    val external = stringResource(R.string.drawer_audio_external)
+    return listOf(follow) + devices.map { d ->
+        when (d.kind) {
+            AudioOutputKind.SPEAKER -> speaker
+            AudioOutputKind.WIRED -> wired
+            AudioOutputKind.BLUETOOTH -> d.productName ?: bluetooth
+            AudioOutputKind.EXTERNAL -> d.productName?.let { "$external · $it" } ?: external
+        }
+    }
 }
 
 /** 手柄浓淡：标题行带当前值，滑杆占一整行（与上面那些行一样从文字列开始） */
@@ -510,18 +704,19 @@ private fun targetLabel(t: Int) =
 private fun flowLabel(f: Int) = if (f == 0) stringResource(R.string.drawer_auto) else "$f%"
 
 @Composable
-private fun OptionRow(icon: ImageVector, label: String, options: List<String>, current: String, onPick: (String) -> Unit) {
+internal fun OptionRow(icon: ImageVector, label: String, options: List<String>, current: String,
+                      width: Dp = 140.dp, onPick: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     DrawerRow(icon, label) {
         Box {
             // 与库页的字段同一做法：按钮定宽，箭头钉在右端，几行的箭头排成一列
             QuietButton(current, onClick = { open = !open },
-                modifier = Modifier.width(140.dp),
+                modifier = Modifier.width(width),
                 trailing = { Icon(Icons.Filled.KeyboardArrowDown, null, Modifier.size(18.dp)) })
             androidx.compose.material3.DropdownMenu(
                 expanded = open,
                 onDismissRequest = { open = false },
-                modifier = Modifier.width(140.dp),
+                modifier = Modifier.width(width),
             ) {
                 for (o in options.distinct()) {
                     androidx.compose.material3.DropdownMenuItem(

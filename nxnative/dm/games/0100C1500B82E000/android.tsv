@@ -11,6 +11,7 @@ status	playable
 tested	v0 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.theworldendswithyoufinalremix
 orientation	landscape
+graphics	nvn
 setting	docked=0
 setting	overlay=0
 setting	rumble=1

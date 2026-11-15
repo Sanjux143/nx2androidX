@@ -17,6 +17,8 @@ void dm_present_sample(uint64_t out[5]);   // gfx_vk_present.c: the performance 
 char *dm_menu_saves(void); void dm_menu_export(void); int dm_menu_import(const char *name);
 int dm_menu_export_note(char *out, int cap); int dm_menu_state(void);
 char *dm_pad_layout_json(void); char *dm_pad_state_json(void);
+void dm_audio_route_device(int32_t id);   // hle_audio.c: the live output streams move to that device at once
+int32_t dm_aaudio_get_device(void);       // audiotoolbox_aaudio.c: the output device in force (0 = the system's own)
 #include <stdlib.h>
 #include <android/log.h>
 #include <android/native_window_jni.h>
@@ -79,12 +81,41 @@ Java_com_nx_android_game_Native_motion(JNIEnv *E, jclass c, jint source, jint de
 }
 
 JNIEXPORT jboolean JNICALL
+// The key event, without the scan code (the entry the runtimes before the gamepad center have: the app calls
+// keyScan when the runtime knows it, and this one otherwise — an old runtime must keep working).
 Java_com_nx_android_game_Native_key(JNIEnv *E, jclass c, jint device, jint source, jint code, jint action, jint meta, jint repeat) {
     (void)E; (void)c;
     dm_java_event e; memset(&e, 0, sizeof e);
     e.type = AINPUT_EVENT_TYPE_KEY; e.source = source; e.device = device;
     e.key_code = code; e.key_action = action; e.key_meta = meta; e.key_repeat = repeat;
     return dm_java_input(&e) ? JNI_TRUE : JNI_FALSE;
+}
+
+// The key event with its physical scan code: the gamepad center's bindings match on it.
+JNIEXPORT jboolean JNICALL
+Java_com_nx_android_game_Native_keyScan(JNIEnv *E, jclass c, jint device, jint source, jint code, jint scan, jint action, jint meta, jint repeat) {
+    (void)E; (void)c;
+    dm_java_event e; memset(&e, 0, sizeof e);
+    e.type = AINPUT_EVENT_TYPE_KEY; e.source = source; e.device = device;
+    e.key_code = code; e.key_scan = scan; e.key_action = action; e.key_meta = meta; e.key_repeat = repeat;
+    return dm_java_input(&e) ? JNI_TRUE : JNI_FALSE;
+}
+
+// The controllers' own table (the gamepad center): the line format pad_map.h reads. Pushed when the game starts
+// and again whenever the player changes something.
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_padMapping(JNIEnv *E, jclass c, jstring spec) {
+    (void)c;
+    const char *s = (*E)->GetStringUTFChars(E, spec, NULL);
+    dm_pad_mapping_set(s ? s : "");
+    if (s) (*E)->ReleaseStringUTFChars(E, spec, s);
+}
+
+// Everything the controller holds is released (the center mutes the input while it is open).
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_padReleaseAll(JNIEnv *E, jclass c) {
+    (void)E; (void)c;
+    dm_pad_release_all();
 }
 
 JNIEXPORT void JNICALL
@@ -260,6 +291,25 @@ Java_com_nx_android_game_Native_frameGenStatus(JNIEnv *E, jclass c) {
     return (*E)->NewStringUTF(E, out);
 }
 
+// The drawer's motion switches: the device's turn moves player 1's six-axis sensor (the host's dm_motion_set, fed by
+// the front end's sensors). The front end re-reads the environment every 250 ms (front_player.c's motion poll), so
+// setting it here reaches the running game at once.
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_motionSet(JNIEnv *E, jclass c, jboolean on, jboolean raw) {
+    (void)E; (void)c;
+    setenv("DM_MOTION", on ? "1" : "0", 1);
+    setenv("DM_MOTION_RAW", raw ? "1" : "0", 1);
+}
+
+// The motion switches as the host sees them: bit 1 = the device's motion moves the controller, bit 2 = a flick keeps
+// its measured direction (the host's made-up waveform stops).
+JNIEXPORT jint JNICALL
+Java_com_nx_android_game_Native_motionGet(JNIEnv *E, jclass c) {
+    (void)E; (void)c;
+    const char *m = getenv("DM_MOTION"), *r = getenv("DM_MOTION_RAW");
+    return (m && atoi(m) ? 1 : 0) | (r && atoi(r) ? 2 : 0);
+}
+
 // The drawer's frame rate step: the adaptive rate (perf_android.c) steps 60 -> 40 -> 30 on its own, and DM_FPS_PIN holds one of those steps.
 // fps_pin reads the variable again every 30 frames, so setting it here takes effect at once. 0 = free again (the rate adapts), 60/40/30 = hold that step.
 // The app calls this after the game starts: the pack's env.txt is read while the host boots, and the later setenv is the one that stays.
@@ -278,4 +328,40 @@ Java_com_nx_android_game_Native_perfPinGet(JNIEnv *E, jclass c) {
     const char *e = getenv("DM_FPS_PIN");
     int v = e ? atoi(e) : 0;
     return v == 60 || v == 40 || v == 30 ? v : 0;   // any other value lets the rate adapt again (fps_pin's rule)
+}
+
+// The drawer's audio output: the device the game plays through (a Bluetooth headset, a USB dongle). The shared
+// audio backend moves the running streams over at once (hle_audio.c's dm_audio_route_device: it stops the units
+// and restarts them on the new device), so the change is heard without restarting the game.
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_audioSet(JNIEnv *E, jclass c, jint id) {
+    (void)E; (void)c;
+    dm_audio_route_device(id);
+}
+
+// The output device in force (0 = the system's own choice).
+JNIEXPORT jint JNICALL
+Java_com_nx_android_game_Native_audioGet(JNIEnv *E, jclass c) {
+    (void)E; (void)c;
+    return dm_aaudio_get_device();
+}
+
+// The drawer's GPU clock: DM_GPU_TURBO=1 keeps the GPU at its highest clock, =auto raises it only while the frames
+// miss the display (perf_android.c reads the variable every 60 presents, so setting it here takes effect at once).
+// 0 = off, the governor's own clock.
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_gpuTurboSet(JNIEnv *E, jclass c, jstring mode) {
+    (void)E; (void)c;
+    if (!mode) return;
+    const char *m = (*E)->GetStringUTFChars(E, mode, NULL);
+    if (m) { setenv("DM_GPU_TURBO", m, 1); (*E)->ReleaseStringUTFChars(E, mode, m); }
+}
+
+// The clock mode in force: "0" off, "1" always at the highest clock, "auto" only while the frames are late.
+JNIEXPORT jstring JNICALL
+Java_com_nx_android_game_Native_gpuTurboGet(JNIEnv *E, jclass c) {
+    (void)c;
+    const char *e = getenv("DM_GPU_TURBO");
+    const char *out = !e || atoi(e) <= 0 ? "0" : !strcmp(e, "auto") ? "auto" : "1";
+    return (*E)->NewStringUTF(E, out);
 }

@@ -4,6 +4,7 @@ tested	v262144 Lenovo Legion Y700 TB320FC (Snapdragon 8+ Gen 1, Adreno 730, Vulk
 package	org.nx2a.unicornoverlordasia
 orientation	landscape
 requires	bcn
+graphics	nvn
 # the 860 MB memory pool as a copied pool: the Legion Y700 2023's gralloc aborts allocating a hardware buffer that big
 env	DM_VK_ZEROCOPY_MAX_MB=512
 # handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on that device (about 22 fps), handheld 11-20 ms

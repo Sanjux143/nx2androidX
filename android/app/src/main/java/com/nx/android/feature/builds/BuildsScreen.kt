@@ -62,6 +62,7 @@ import com.nx.android.domain.Ported
 import com.nx.android.app.AppActions
 import com.nx.android.core.ui.LocalAppLocale
 import com.nx.android.core.ui.components.CapsuleButton
+import com.nx.android.core.ui.components.FirmwareRow
 import com.nx.android.core.ui.components.Hint
 import com.nx.android.feature.filepicker.PickerMode
 import com.nx.android.feature.filepicker.PickerRequest
@@ -163,6 +164,8 @@ private fun TaskDetail(lib: LibraryState, record: PortState.Record, viewModel: B
                 stringResource(R.string.builds_60fps).takeIf { config.fps60 },
                 stringResource(R.string.builds_experimental).takeIf { config.experimental },
                 if (config.aliasHeadroom >= 0) stringResource(R.string.builds_alias_short, config.aliasHeadroom) else null,
+                config.sharedFont.takeIf { it.isNotBlank() }?.let { stringResource(R.string.builds_shared_font_short, File(it).name) },
+                stringResource(R.string.builds_mt_replay).takeIf { config.mtReplay },
             ).ifEmpty { listOf(stringResource(R.string.builds_default_options)) }
             Hint(stringResource(R.string.builds_used_options, options.joinToString(" · ")))
         }
@@ -272,6 +275,32 @@ private fun TargetCard(lib: LibraryState, port: BuildsUiState, viewModel: Builds
                 ConfigRow(stringResource(R.string.builds_experimental), cfg.experimental) { cfg = cfg.copy(experimental = it); lib.setConfig(f, cfg) }
                 AliasRow(cfg.aliasHeadroom) { cfg = cfg.copy(aliasHeadroom = it); lib.setConfig(f, cfg) }
                 Hint(stringResource(R.string.builds_alias_hint), size = 11.sp)
+                // 玩家自己的覆盖：系统字体、固件 dump、多线程回放
+                PathOptionRow(
+                    label = stringResource(R.string.builds_shared_font),
+                    value = cfg.sharedFont,
+                    empty = stringResource(R.string.builds_shared_font_default),
+                    onPick = {
+                        onRequest(PickerRequest(PickerMode.FILE, setOf("ttf"), null,
+                            locale.str(R.string.builds_shared_font_pick), onPicked = { file ->
+                                cfg = cfg.copy(sharedFont = file.absolutePath); lib.setConfig(f, cfg)
+                            }))
+                    },
+                    onClear = { cfg = cfg.copy(sharedFont = ""); lib.setConfig(f, cfg) },
+                )
+                Hint(stringResource(R.string.builds_shared_font_hint), size = 11.sp)
+                // 固件：整机级的一份（环境里导入的，迁移器统一带上），这里只是换一份 / 导入
+                FirmwareRow(
+                    imported = actions.firmware(),
+                    onImport = {
+                        onRequest(PickerRequest(PickerMode.FILE, setOf("zip"), null,
+                            locale.str(R.string.fw_pick), onPicked = { f -> actions.onImportFirmware(f) }))
+                    },
+                    onClear = { actions.onClearFirmware() },
+                )
+                Hint(stringResource(R.string.fw_hint), size = 11.sp)
+                ConfigRow(stringResource(R.string.builds_mt_replay), cfg.mtReplay) { cfg = cfg.copy(mtReplay = it); lib.setConfig(f, cfg) }
+                Hint(stringResource(R.string.builds_mt_replay_hint), size = 11.sp)
             }
 
             if (!canStart) {
@@ -602,6 +631,24 @@ private fun ConfigRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
     Row(verticalAlignment = Alignment.CenterVertically) {
         androidx.compose.material3.Checkbox(checked = checked, onCheckedChange = onChange)
         Text(label, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/**
+ * 一行「玩家的覆盖」：标签 + 现在的值（空时写默认）+ 选 / 清。
+ * 字体是文件、固件是文件夹；清掉就是回到默认（自带的那份字体 / 不带固件）。
+ */
+@Composable
+private fun PathOptionRow(label: String, value: String, empty: String, onPick: () -> Unit, onClear: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            if (value.isBlank()) empty else shortPath(value),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        QuietButton(stringResource(R.string.builds_change), onClick = onPick)
+        if (value.isNotBlank()) QuietButton(stringResource(R.string.builds_clear), onClick = onClear)
     }
 }
 

@@ -3,6 +3,7 @@ package com.nx.android.data.porting
 import android.content.Context
 import com.nx.android.data.PrefsStore
 import com.nx.android.domain.GameConfig
+import com.nx.android.domain.GameConfigJson
 import com.nx.android.domain.porting.BuildSession
 import com.nx.android.domain.porting.PortHistoryRepository
 import com.nx.android.domain.porting.PortPhase
@@ -173,14 +174,13 @@ class BuildSessionRepository @Inject constructor(
         val c = o.optJSONObject("config")
         BuildSession(
             o.getString("id"), o.getString("game"), PortPhase.valueOf(o.getString("phase")), o.optString("out"),
-            o.getLong("startedAt"), o.optLong("seconds"), c?.let {
-                GameConfig(it.optBoolean("touch"), it.optBoolean("fps60"), it.optBoolean("experimental"), it.optInt("alias", -1))
-            }, o.optString("stage"), o.optDouble("progress").toFloat(), o.optBoolean("legacy"), o.optBoolean("logAvailable", true),
+            o.getLong("startedAt"), o.optLong("seconds"), c?.let { GameConfigJson.decode(it) },
+            o.optString("stage"), o.optDouble("progress").toFloat(), o.optBoolean("legacy"), o.optBoolean("logAvailable", true),
         )
     } catch (_: Exception) { null }
 
     private fun writeRecord(s: BuildSession) {
-        val c = s.config?.let { JSONObject().put("touch", it.touch).put("fps60", it.fps60).put("experimental", it.experimental).put("alias", it.aliasHeadroom) }
+        val c = s.config?.let { GameConfigJson.encode(it) }
         val o = JSONObject().put("schemaVersion", 1).put("id", s.id).put("game", s.game).put("phase", s.phase.name)
             .put("out", s.output).put("startedAt", s.startedAt).put("seconds", s.seconds).put("stage", s.stage)
             .put("progress", s.progress).put("legacy", s.legacy).put("logAvailable", s.logAvailable)

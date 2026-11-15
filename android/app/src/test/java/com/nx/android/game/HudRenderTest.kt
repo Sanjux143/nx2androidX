@@ -60,23 +60,40 @@ class HudRenderTest {
 
     @Test
     fun `the frame generation names its engine and shows the presented rate`() {
-        val sample = HudSample(gameFps = 60.0, presentedFps = 120.0)
+        val sample = HudSample(gameFps = 60.0, presentedFps = 120.0, fgState = HudData.FG_GENERATING)
         val lines = HudData.render(sample, setOf(HudField.FPS), engineLabel = "LSFG x2")
         assertEquals("LSFG x2 120 fps", lines[0].text)   // one number: what reaches the screen
     }
 
     @Test
-    fun `a frame generation that is not adding frames shows the game's own rate, without the engine`() {
-        val sample = HudSample(gameFps = 60.0, presentedFps = 60.0)
-        val lines = HudData.render(sample, setOf(HudField.FPS), engineLabel = "LSFG x2")
-        assertEquals("60 fps", lines[0].text)
+    fun `the label follows the host's state, so it does not blink while the generation holds back`() {
+        // the generation is on but held itself back (the game's rate is not steady enough): the label stays
+        val waiting = HudSample(gameFps = 30.0, presentedFps = 30.0, fgState = HudData.FG_ON)
+        assertEquals("LSFG x2 30 fps", HudData.render(waiting, setOf(HudField.FPS), engineLabel = "LSFG x2")[0].text)
+        // the generation is off: no label, the game's own rate
+        val off = HudSample(gameFps = 30.0, presentedFps = 30.0, fgState = HudData.FG_OFF)
+        assertEquals("30 fps", HudData.render(off, setOf(HudField.FPS), engineLabel = "LSFG x2")[0].text)
+        // the host cannot do it: it says so instead of showing the engine's name
+        val bad = HudSample(gameFps = 30.0, presentedFps = 30.0, fgState = HudData.FG_UNAVAILABLE)
+        assertEquals("no LSFG 30 fps", HudData.render(bad, setOf(HudField.FPS), engineLabel = "LSFG x2")[0].text)
+        // no state yet (the host is not up): no label
+        assertEquals("30 fps", HudData.render(HudSample(gameFps = 30.0), setOf(HudField.FPS), engineLabel = "LSFG x2")[0].text)
     }
 
     @Test
-    fun `the frame time is hidden while the frame generation is adding frames`() {
-        val generating = HudSample(gameFps = 60.0, presentedFps = 120.0, frameMs = 16.7)
-        assertEquals(listOf("LSFG x2 120 fps"), HudData.render(generating, setOf(HudField.FPS, HudField.FRAME_TIME), engineLabel = "LSFG x2").map { it.text })
-        val idle = HudSample(gameFps = 60.0, presentedFps = 60.0, frameMs = 16.7)
+    fun `the host's status line gives its state`() {
+        assertEquals(HudData.FG_GENERATING, HudData.fgState("1 generating"))
+        assertEquals(HudData.FG_ON, HudData.fgState("2 on, waiting for a steady frame rate"))
+        assertEquals(HudData.FG_UNAVAILABLE, HudData.fgState("-1 no Lossless.dll (the app looks in …)"))
+        assertEquals(HudData.FG_OFF, HudData.fgState("0 off"))
+        assertNull(HudData.fgState(null))
+    }
+
+    @Test
+    fun `the frame time is hidden while the frame generation is on`() {
+        val on = HudSample(gameFps = 60.0, presentedFps = 120.0, frameMs = 16.7, fgState = HudData.FG_GENERATING)
+        assertEquals(listOf("LSFG x2 120 fps"), HudData.render(on, setOf(HudField.FPS, HudField.FRAME_TIME), engineLabel = "LSFG x2").map { it.text })
+        val idle = HudSample(gameFps = 60.0, presentedFps = 60.0, frameMs = 16.7, fgState = HudData.FG_OFF)
         assertEquals(listOf("60 fps", "16.7 ms"), HudData.render(idle, setOf(HudField.FPS, HudField.FRAME_TIME), engineLabel = "LSFG x2").map { it.text })
     }
 

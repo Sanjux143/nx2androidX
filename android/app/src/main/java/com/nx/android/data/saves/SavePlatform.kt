@@ -1,8 +1,7 @@
 package com.nx.android.data.saves
 
 import android.content.Context
-import com.nx.android.data.Player
-import com.nx.android.data.SaveShare
+import com.nx.android.data.SaveBackup
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -12,11 +11,13 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * What the save flow needs from the device: the app's own folder (the live save lives there) and the
+ * cache (a package is unpacked into it before it is installed).
+ */
 interface SavePlatform {
     val filesDir: File
     val cacheDir: File
-    fun packagesDirectory(): File
-    fun isGameRunning(): Boolean
 }
 
 @Singleton
@@ -25,8 +26,6 @@ class AndroidSavePlatform @Inject constructor(
 ) : SavePlatform {
     override val filesDir: File get() = context.filesDir
     override val cacheDir: File get() = context.cacheDir
-    override fun packagesDirectory(): File = SaveShare.packagesDir(context)
-    override fun isGameRunning(): Boolean = Player.playProcessAlive(context)
 }
 
 @Module

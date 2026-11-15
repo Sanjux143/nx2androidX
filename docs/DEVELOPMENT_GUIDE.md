@@ -10,6 +10,12 @@ Install [Python](https://www.python.org) 3.11 or later and `python -m pip instal
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), for the legacy path's install and the save manager
 - your own `prod.keys`, dumped from your Switch
 
+On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` uses `<NDK>/toolchains/llvm/prebuilt/linux-aarch64/bin` instead when that folder holds a `clang`, and `linux-x86_64` otherwise (so qemu-user or box64 setups work as before). Make the folder yourself:
+- link `sysroot` beside `bin` to `../linux-x86_64/sysroot`;
+- put in `bin` a wrapper `clang` (and `clang++`) running an arm64 LLVM 18 build with `--sysroot` set to that `sysroot` and nothing else: the wrapper passes no `-resource-dir`, so that LLVM's own `lib/clang/18/lib/linux/` must hold `libclang_rt.builtins-aarch64-android.a` (Linaro's LLVM 18.1.8 does; check with `ls`; a stock LLVM build that lacks it needs `-resource-dir` pointing at the NDK's `linux-x86_64/lib/clang/18`, which has the builtins and `libunwind.a`);
+- link `ld.lld` and the `llvm-*` tools to the same LLVM;
+- for the backend's own shaders, link `<NDK>/shader-tools/linux-aarch64/glslc` to a native `glslc` (Arch: `shaderc`, `/usr/bin/glslc`).
+
 ## Port a game
 
 The app:
@@ -64,7 +70,7 @@ python -m porter driver --system --package org.nx2a.supermario3dworld
 python -m porter host --package org.nx2a.supermario3dworld
 ```
 
-It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
+It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. It also refuses a host built from another profile header than this checkout's (another layout, `--alias-headroom` or a derived profile); a header that differs only by defines added later that are off (`ADDED_DEFINES` in `porter/host.py`) is accepted. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
 ## Layout
 
@@ -119,11 +125,26 @@ and directional cap throws and Tears of the Kingdom bow aiming is still required
 before enabling the opt-in in a profile. Host sensor tests verify routing and
 axis preservation, not game recognition or device behavior.
 
+The phone app has the same two switches in the game's drawer (the **Controls** tab): they are
+handed to the host as env rows when the game starts and reach the running game over JNI
+(`motionSet`, the way the frame rate step does), so a change takes effect at once, without
+restarting the game. One game has one pair. The display's rotation comes from the app's Activity
+through JNI (`Display.getRotation()`): the app's player front end has no Activity of its own, so
+it asks for it.
+
 ## Tests
 
 ```
 python -m unittest discover tests
 ```
+
+`test_fragment_output_masks` compiles the production attachment-state loop and
+checks sparse output maps, absent fragment shaders, channel masks, integer
+formats and the flat diagnostic shader's all-target output. The optional
+[fragment-output replay](../tests/vk_fragment_output_masks.md) adds pipeline
+observations and pixel checks; its build script supports Windows, macOS and
+Linux NDK hosts and does not contact a device. Host checks do not qualify
+physical GPU rendering.
 
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
@@ -133,11 +154,23 @@ platform's protection-fault signal. The zero-copy diagnostics fixture forces
 slab and reuse-cache misses to exercise allocation/import failure cleanup; it
 does not validate the slab or reuse-cache implementations.
 
-`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
-different C padding bytes but identical image fields. Image keys include each
-array element's sampler, view and layout as explicit words; padding cannot force
-another descriptor allocation. Reuse still compares the hash, layout and
-submission epoch, without a full-content collision check.
+`test_gui_inspect` runs real Qt event loops and synthetic child processes with
+PySide6's offscreen platform (skipped when PySide6 is not installed). It checks
+that inspection shows stderr for missing/invalid JSON, completes a failed launch,
+escapes diagnostic text, and preserves structured errors, unsupported-title
+results and list callers. Process callbacks run once and release the process.
+These tests need no game files, keys, devices or browser, and do not identify the
+cause of a particular player's inspection failure.
+
+`test_descriptor_hash` exercises the Vulkan descriptor-content cache (`g_setc`)
+with owned static keys, including every buffer, image and texel-view field.
+Different C padding bytes do not prevent reuse; dynamic offsets stay outside the
+static key. Constant-hash cases verify exact equality under forced collisions,
+source mutation, replacement and submission epochs. Bounded-arena exhaustion
+bypasses new cache entries while retaining existing hits and counting capacity
+bypasses; oversized keys and explicitly disabled caching remain uncached. The
+separate per-stage memo uses generation counters. These host checks do not
+establish a natural collision, game symptom or device performance result.
 
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies
@@ -163,6 +196,40 @@ Scratch references are reusable only in their submission; recycling waits for
 completion before the next epoch. GPU-written segments must remain outside this
 immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
+
+Shader and translator reuse checks content receipts with relative output names,
+sizes and SHA-256 hashes, including translator dependencies. The bundle takes
+the fast path when size and modification time match on Windows. POSIX also
+checks change time and file identity. Changed metadata falls back to hashing,
+and matching contents refresh the recorded metadata. The Windows fast path can
+miss a same-size edit that preserves the original modification time.
+The shader key includes the translator's actual output bytes and the export helpers
+`shader_vk.py`, `dmsv.py` and `shader_products.py`; unrelated Android tools do not
+invalidate it. Inputs changing during generation stop publication. The changed key
+and receipt format make existing ports translate once before reuse resumes.
+
+The exporter records every expected shader (including geometry topology variants)
+and failed key/reason in `shaders.dmsv.report.json`. It checks SPIR-V framing and
+entry-point stage and requires reflection beside each emitted module. Valid
+products from an interrupted batch are kept. Missing or invalid outputs get a
+`[RED]` diagnostic. Before retrying integer vertex inputs, the exporter removes
+the first pass's outputs to prevent reuse of an incompatible input interface.
+`dmsv.write` reads each payload back and the runtime checks framing and reflection.
+The porter compares the emitted keys and stages with the expected and failed
+inventory and rejects an empty result before publishing the bundle, report or
+receipt. An export with at least one valid shader can be reused with unchanged
+inputs and products. The receipt records the failure count and the published
+report's digest. A missing or changed report or changed input triggers a rebuild.
+`test_shader_cache` and `test_shader_export_checks` exercise these contracts without
+game files or a GPU.
+
+Native harnesses discover Vulkan headers through `ANDROID_NDK_HOME` (or the
+porter tool installation). Set it to an installed NDK when the SDK is outside the
+usual locations. The POSIX probe uses mutexes and condition variables supported on
+macOS and Linux. Protected-page tests handle both SIGSEGV and macOS SIGBUS and
+keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
+the current allocator context while forcing cache misses to exercise every
+allocation/import failure stage.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
@@ -216,6 +283,33 @@ The commits before 2026-10-28 predate the rule.
 
 `nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream, and the repository has no `upstream` remote (removed 2026-10-31): `origin` is the only one. Upstream's profiles are still a good reference when bringing up a game it has; read them on GitHub (`https://github.com/seedds/nxnative/tree/main/dm/games/<title ID>`) and write our own.
 
+The Vulkan driver pipeline cache (`vk_pipeline_cache.bin` under `DM_ROOT`) now has a
+versioned envelope containing the device, driver, API and UUID identity, a renderer
+cache ABI, a bounded length and SHA-256 digest. A legacy raw cache is accepted only
+when its first 32 bytes match Vulkan's version-one device and pipeline-cache UUID
+header, then upgraded to the envelope on the next save even without new pipelines.
+Legacy files have no digest or extended identity, so they retain only those older
+compatibility checks until migration. Mismatched or corrupt envelopes start empty;
+a driver rejection retries empty, and failure to create that cache is logged.
+Pipeline creation marks the cache dirty even when its size stays unchanged. A
+complete snapshot with the same size and SHA-256 as the last accepted load or
+successful save skips publication. Besides the present timer, a save also starts on
+a thread of its own after 64 new pipelines, at most once per gap: 15 s for every
+whole 16 MB of cache (at least 15 s, at most 120 s), as each save rewrites the whole file.
+Other saves use one fixed `.tmp` file under the
+I/O lock, so the next write reuses an interrupted save's staging file. Publication
+requires successful writes and synchronization; failed or incomplete snapshots and
+pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
+start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
+when changing the renderer's persistent cache contract.
+
+The replay statistics printed every 600 presents include cumulative descriptor
+sets reused, new sets and `key arena bypasses`. A bypass counts each otherwise
+cacheable miss whose owned key does not fit in the current submission's bounded
+arena. Existing entries can still hit after exhaustion. Tracing, explicitly
+disabled caching and oversized keys do not increment this counter. The arena
+resets each submission; the counter remains cumulative for the host process.
+
 ## The phone app
 
 `android/` is an Android app that runs the porter **on the phone**: the game files are turned into a data pack on the
@@ -245,6 +339,28 @@ that it is not in this build; the same host built by the command line is `porter
 change the license of the build: the code it is made from is GPL-3.0-or-later either way.
 [android/NOTICE.md](../android/NOTICE.md) says what that means for the app.
 
+## Testing the physical controller without a controller
+
+The physical controller's path (the app's gamepad center, the mapping table, the host's dictionary) can be tested
+on a phone without a controller in hand: `devtools/uinput_pad.c` is a virtual gamepad that sends the same kernel
+events a pad sends.
+
+```bash
+NDK=~/Library/Android/sdk/ndk/27.2.12479018
+$NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android24-clang -O2 -o /tmp/uinput_pad devtools/uinput_pad.c
+adb push /tmp/uinput_pad /data/local/tmp/uinput_pad
+adb shell 'chmod 755 /data/local/tmp/uinput_pad'
+adb shell '/data/local/tmp/uinput_pad "Nintendo Switch Pro Controller" 5 1406 8201 32769 st /data/local/tmp/pad.cmd'
+```
+
+Its bus, vendor and product pick Android's key layout file, which is the point: the layout decides what a button is
+*called* (the Nintendo one calls the top button `BUTTON_Y`, the generic one `BUTTON_X`), while the scan code says
+where the button *is* (307 is the top one on every controller). A pad that is created, unplugged and created again
+also shows whether the app finds its profile again.
+
+The host says what the game received: `DM_PAD_LOG=1` in the pack's `env.txt` makes it log every key event with its
+scan code and the game button it became.
+
 ## Licenses
 
 The repository's own code is GPL-3.0-or-later ([LICENSE](../LICENSE)), nxnative included; the vendored third-party code
@@ -258,3 +374,28 @@ keeps its own licenses. Three rules when the tree changes:
   translator runs on, and `nxnative/dm/tools/nx_extract/LICENSES/` the one of LibHac.
 - Do not commit a build artifact that carries a build machine's paths: the debug symbols (`*.pdb`) are ignored for that
   reason, and the .gitignore rule keeps them out.
+
+## Optional native keyboard
+
+This is upstream's APK front end (the `org.nx2a` activities): this line's app front (`front_player.c`) does not build
+it, so the option only affects the legacy APK path.
+
+`python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its Unicode EditText dialog. Combine it with `--external-display` to select `org.nx2a.KeyboardExternalActivity`; external display alone keeps its controller keyboard. These opt-in activities require JDK `javac` plus SDK platform and build-tools; ordinary NativeActivity builds remain code-less and keep the controller keyboard. Installation and save requests resolve the installed package's launcher activity, including ports built before this option existed.
+
+JNI passes ordinary UTF-8 byte arrays, which preserve supplementary characters. The guest's minimum and maximum lengths are UTF-16 units, and native output truncation preserves complete UTF-8 code points. The guest passes its request-local minimum length to a host pthread and joins it. That worker attaches to the VM, looks up and calls the Java method, and detaches on its own pthread stack. The bridge caches method presence or absence for the activity class. When the optional method is absent, the guest uses the overlay keyboard after the worker exits.
+
+Cancel, pause and destruction release waiting callers without accepting text. Requests are serialized, and a concurrent request is cancelled with a log line. The native dialog takes activity window focus, so the regular Android window-focus callback reports the transition to the guest. The bridge supports text entry. Additional guest keyboard modes and candidate/update callbacks are outside its scope.
+
+Run the asset-free emulator contract probe with:
+
+```sh
+python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK_HOME" --serial emulator-5554 --out /tmp/nx2a-keyboard
+```
+
+It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
+
+### CPU descriptor readiness
+
+`python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
+
+For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.

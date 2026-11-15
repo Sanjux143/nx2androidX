@@ -21,6 +21,8 @@ status	playable
 tested	v2228224 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.animalcrossing
 orientation	landscape
+graphics	nvn
+lan	1
 env	DM_VK_CB_DRAWS=0
 env	DM_VK_ASYNC_PIPE=0
 env	DM_YIELD_BACKOFF=0

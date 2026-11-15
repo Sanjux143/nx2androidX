@@ -41,6 +41,18 @@ import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.RunAction
 import com.nx.android.app.AppActions
 import com.nx.android.app.AppRoot
+import com.nx.android.input.GamepadScan
+import com.nx.android.input.PadCalibration
+import com.nx.android.input.PadTestInput
+import com.nx.android.input.ui.PadCenterController
+import com.nx.android.input.ui.capturableAxes
+import com.nx.android.core.ui.nav.NavEdge
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.NavKeys
+import com.nx.android.core.ui.nav.UiInput
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import java.io.File
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +71,9 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_TAB = "tab"   // the notification's tap lands on the builds page
         const val EXTRA_BUILD_ID = "buildId"
+
+        /** 十字键帽推到底才算方向（帽子只有 -1/0/1，门槛比摇杆低）。 */
+        const val HAT_THRESHOLD = 0.5f
     }
 
     @Inject lateinit var locale: AppLocale
@@ -73,6 +88,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var onboarding: OnboardingState
     @Inject lateinit var environmentSetup: com.nx.android.domain.environment.EnvironmentSetup
     @Inject lateinit var drivers: com.nx.android.domain.drivers.DriverRepository
+    @Inject lateinit var firmwareRepo: com.nx.android.data.firmware.FirmwareRepository
     @Inject lateinit var envCheck: EnvCheckState
     @Inject lateinit var update: com.nx.android.appstate.UpdateState
 
@@ -80,6 +96,17 @@ class MainActivity : ComponentActivity() {
     /** Which tab the screen opens on (the notification's tap says the builds page) */
     var launchTab = 0
     private var launchBuildId by mutableStateOf("")
+
+    /** 手柄中心（首页顶栏的入口）：档案跟游戏共用同一个文件 */
+    private val padController by lazy { PadCenterController.forContext(this) }
+
+    /** 首页的手柄中心开着吗（开着的时候手柄的键不进库页，只进示波与抓键）。
+     *  这一份是**唯一**的那份：分发层（dispatchKeyEvent）与页面读的都是它。 */
+    var padCenterOpen by mutableStateOf(false)
+
+    /** 摇杆与十字键帽各自的边沿状态：推到底发一次，回中才复位。 */
+    private val hatEdge = NavEdge(HAT_THRESHOLD)
+    private val stickEdge = NavEdge()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,6 +118,7 @@ class MainActivity : ComponentActivity() {
         }
         onboarding.storageOk = storageGranted()
         onboarding.batteryOk = batteryUnrestricted()
+        GamepadScan.start(this)   // 顶栏的手柄入口要知道有几只手柄接着
         launchTab = intent?.getIntExtra(EXTRA_TAB, 0) ?: 0
         launchBuildId = intent?.getStringExtra(EXTRA_BUILD_ID).orEmpty()
         if (!prefs.bool(PrefsStore.OB_COMPLETED)) onboarding.open()
@@ -104,7 +132,11 @@ class MainActivity : ComponentActivity() {
         // 玩家看不见，但游戏结束后它就在那儿）。判据直接问进程，不看 PlayerState.running：那个靠 2 秒
         // 轮询，App 的进程刚起来时还是 false。
         if (isLauncherEntry(intent) && Player.playProcessAlive(this)) com.nx.android.game.GameActivity.resume(this)
-        setContent { AppRoot(prefs, locale, port, library, player, onboarding, drivers, environmentSetup, actions, launchTab, runtime, launchBuildId) }
+        setContent {
+            AppRoot(prefs, locale, port, library, player, onboarding, drivers, environmentSetup, actions,
+                launchTab, runtime, launchBuildId, padController,
+                padCenterOpen = padCenterOpen, onPadCenter = { padCenterOpen = it })
+        }
         // the small tools come with the app: an update brings new ones, and the phone has to get them
         // (the app's own Vulkan driver too: it is unpacked into the app's folder, ready to be picked)
         Thread {
@@ -134,7 +166,8 @@ class MainActivity : ComponentActivity() {
                 // 落位跟着这个游戏的数据包走：它在可移动卡上，新包就建在那儿（内部存储的那份不动）
                 val packDir = library.packDirOf(file)?.absolutePath
                 PortService.start(this, file.absolutePath, prefs.keys,
-                                  cfg.touch, cfg.fps60, cfg.experimental, cfg.aliasHeadroom, packDir)
+                                  cfg.touch, cfg.fps60, cfg.experimental, cfg.aliasHeadroom,
+                                  cfg.sharedFont, firmwareRepo.folder ?: "", cfg.mtReplay, packDir)
             } else {
                 toast(locale.str(R.string.builds_needs_storage)); askStorage()
             }
@@ -180,6 +213,14 @@ class MainActivity : ComponentActivity() {
         onToast = { toast(it) },
         version = { versionName() },
         keys = { prefs.keys },
+        // 固件：整机级的一份，导入 zip 解到 App 的私有目录（可选项）
+        firmware = { firmwareRepo.imported },
+        onImportFirmware = { zip -> importFirmware(zip) },
+        onClearFirmware = {
+            firmwareRepo.clear()
+            envCheck.refresh()   // the chip's colour follows it at once
+            toast(locale.str(R.string.fw_cleared))
+        },
         onShareLog = {
             lifecycleScope.launch {
                 val zip = withContext(Dispatchers.IO) {
@@ -229,6 +270,21 @@ class MainActivity : ComponentActivity() {
         } ?: locale.str(R.string.common_log) },
     )
 
+    /**
+     * 导入固件包：解压到 App 的私有目录（后台线程，340 MB 的包要十几秒）。
+     * 解的是模拟器那种固件包（zip 根下一堆 .nca）；解压后的那份就是移植器要的「系统内容文件夹」。
+     */
+    private fun importFirmware(zip: File) {
+        if (!zip.isFile) { toast(locale.str(R.string.fw_import_failed, zip.name)); return }
+        lifecycleScope.launch {
+            val n = withContext(Dispatchers.IO) {
+                runCatching { firmwareRepo.unpack(zip) }
+            }
+            n.onSuccess { toast(locale.str(R.string.fw_imported, zip.name, it)); envCheck.refresh() }   // the chip's colour follows it at once
+                .onFailure { toast(locale.str(R.string.fw_import_failed, zip.name)) }
+        }
+    }
+
     private fun updateRuntime(pack: File, name: String) {
         if (Player.playProcessAlive(this) || !operations.beginRuntimeUpdate(pack.absolutePath, name)) {
             toast(locale.str(R.string.runtime_busy))
@@ -266,6 +322,89 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /**
+     * 手柄中心开着：手柄的键只进示波与抓键，不进库页（库页的按钮不该被手柄按到）。
+     * Back 不在这里管：面板自己收（Compose 的 BackHandler）。
+     */
+    override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        // 手柄中心开着：手柄设备的键只进示波与抓键，不进库页。
+        // 判据是「这个事件来自手柄设备」，不是「keyCode 是不是手柄键」：有的 ROM 会把
+        // 手柄的 B 键再发一个 BACK（小米就是这样），漏下去就把中心关了。
+        // 导航条与手势的 Back 不是手柄设备：它们照旧走（BackHandler 关中心）。
+        if (padCenterOpen && isGamepad(e.deviceId)) {
+            if (GamepadScan.devices.value.none { it.id == e.deviceId }) GamepadScan.refreshNow(this)
+            PadTestInput.onKey(e) { deviceId, scan, key -> padController.resolveTarget(deviceId, scan, key) }
+            padController.offerKey(
+                e.deviceId, true,
+                e.action == KeyEvent.ACTION_DOWN, e.action == KeyEvent.ACTION_UP, e.repeatCount,
+                e.scanCode, e.keyCode,
+            )
+            return true
+        }
+        // 手柄的键 → 界面导航：库页因此能用手柄选游戏、打开与关掉配置面板。
+        val nav = navKeyOf(e)
+        if (nav != null) {
+            val down = e.action == KeyEvent.ACTION_DOWN
+            // 按住不放时按节奏连发（首键立即），别一次跳过好几个
+            if (down && NavKeys.repeatAllowed(e.repeatCount)) UiInput.emit(nav)
+            return true
+        }
+        return super.dispatchKeyEvent(e)
+    }
+
+    /** 摇杆与扳机：中心开着的时候只进示波与抓键；中心关着的时候摇杆当方向键。 */
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        if (padCenterOpen) {
+            val info = GamepadScan.devices.value.firstOrNull { it.id == e.deviceId }
+            val deadzone = info?.let { padController.deadzoneOf(it) } ?: PadCalibration.DEFAULT_DEADZONE
+            PadTestInput.onMotion(e, deadzone)
+            padController.offerAxis(e.deviceId, isGamepad(e.deviceId), capturableAxes(e))
+            return true
+        }
+        // 摇杆当方向键：十字键帽优先，左摇杆兜底。边沿触发——推到底发一次，回中才能再走一步，
+        // 不然摇杆一推就一路走到底。扳机与肩键不参与导航。
+        if (isGamepad(e.deviceId)) {
+            // 两边各记各的边沿：帽子的方向与摇杆的方向不是一回事
+            val hat = hatEdge.onAxis(
+                e.getAxisValue(MotionEvent.AXIS_HAT_X), e.getAxisValue(MotionEvent.AXIS_HAT_Y))
+            val stick = stickEdge.onAxis(
+                e.getAxisValue(MotionEvent.AXIS_X), e.getAxisValue(MotionEvent.AXIS_Y))
+            val dir = hat ?: stick
+            if (dir != null) UiInput.emit(dir)
+            return true
+        }
+        return super.onGenericMotionEvent(e)
+    }
+
+    /**
+     * 这个按键是不是给界面的导航动作。
+     *
+     * 真手柄：面键按**位置**认（扫描码：底下那颗 = 确认，右边那颗 = 返回）——
+     * 系统给的 keyCode 是按手柄上印的字翻的，各家不一样。十字键按 keyCode（`DPAD_*` 都一样）。
+     * 手柄自己上报的系统返回键也当返回：小米等 ROM 会把面键的返回再报一个 BACK，
+     * 一起收掉就不会「既关掉浮层又退出 App」。导航条与手势的 Back 不是手柄设备，照旧走系统。
+     *
+     * 调试构建：还认虚拟设备（`adb shell input keyevent`）注进来的十字键与面键——
+     * 没有手柄时也能在真机上验这条通路。只认这一小组键，软键盘的键不碰。
+     */
+    private fun navKeyOf(e: KeyEvent): NavKey? {
+        if (isGamepad(e.deviceId)) return NavKeys.fromKeyEvent(e.scanCode, e.keyCode)
+        if (BuildConfig.DEBUG && isVirtualDevice(e.deviceId)) return NavKeys.fromInjectedKeyCode(e.keyCode)
+        return null
+    }
+
+    /** 这只设备是虚拟设备吗（`adb shell input` 注进来的键都算）。 */
+    private fun isVirtualDevice(deviceId: Int): Boolean =
+        InputDevice.getDevice(deviceId)?.isVirtual == true
+
+    /** 这只设备是手柄吗（虚拟设备不算：小米常驻一个 uinput-xiaomi，它说是手柄却从不发输入）。 */
+    private fun isGamepad(deviceId: Int): Boolean {
+        val manager = getSystemService(android.hardware.input.InputManager::class.java) ?: return false
+        val device = manager.getInputDevice(deviceId) ?: return false
+        return GamepadScan.isGamepad(device)
+    }
+
 
     /**
      * 桌面图标那条 intent 会送到任务根的**已有**那个库页实例上（栈的顺序不动，游戏页还在最上面）。

@@ -48,6 +48,16 @@ class AndroidProfiles(unittest.TestCase):
         for v in ('10', '85', '42'):
             with self.assertRaises(android_profile.ProfileError, msg=v): android_profile.load(profile_dir([('status', 'boots'), ('setting', f'opacity={v}')]).name)
 
+    def test_what_the_game_needs(self):   # graphics (vulkan | gl | nvn) and the local network: the library page says them before the port
+        d = profile_dir([('status', 'playable'), ('graphics', 'gl'), ('lan', '1'), ('requires', 'bcn')])
+        p = android_profile.load(d.name)
+        self.assertEqual(p.graphics, 'gl'); self.assertTrue(p.lan)
+        bare = android_profile.load(profile_dir([('status', 'boots')]).name)
+        self.assertEqual(bare.graphics, ''); self.assertFalse(bare.lan)   # not known is not the same as no
+        for rows in ([('status', 'boots'), ('graphics', 'directx')], [('status', 'boots'), ('lan', 'yes')]):
+            d = profile_dir(rows)
+            with self.assertRaises(android_profile.ProfileError, msg=rows): android_profile.load(d.name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
@@ -155,6 +165,7 @@ class DataPack(unittest.TestCase):
             self.assertEqual((o / 'settings.txt').read_text(), 'docked=0\noverlay=1\nrumble=1\n')
             self.assertEqual((man['files'], man['bytes'], man['dlc'], man['requires']), (4, 35, [1], ['bcn']))   # the installer checks requires
             self.assertEqual(man['status'], p.status)   # the app tells the player what to expect (an experimental port says so)
+            self.assertIn('graphics', man); self.assertIn('lan', man)   # what the game needs: the library page shows it from the pack
             self.assertEqual(datapack.read_manifest(o)['package'], 'org.nx2a.neo')
             datapack.build(t / 'touch-data', profile=p, version='v196608', display='1.03', patched=t / 'patched', romfs=t / 'romfs', shaders=t / 'shaders.dmsv',
                            settings=pipeline.TOUCH_SETTINGS)   # --touch: the gamepad starts hidden, the profile's other settings stay
@@ -429,6 +440,50 @@ class Experimental(unittest.TestCase):
         finally: shutil.rmtree(t, ignore_errors=True)
 
 
+class OwnDecoder(unittest.TestCase):
+    """The shader split gets the game's own decoder only when the game's files hold Oodle entries of their own (GFPAK / Trinity packs). A pure Unreal game's shader code archives are
+    decoded by the UE rounds (device_ue), so the split gets no decoder: it would boot the game for a job of zero entries (and crash on a dump whose build the profile does not register)"""
+
+    SRC_UE = dict(graphics=('nvn', 'NVN'), oodle_packs=(False, ''), ue_decode=(True, 'Unreal Engine 5.6 IoStore containers'),
+                  glslc_capture=(False, ''), ue_legacy=(False, ''))
+    SRC_GFPAK = dict(graphics=('nvn', 'NVN'), oodle_packs=(True, "Game Freak's GFPAK archives"), ue_decode=(False, ''),
+                     glslc_capture=(False, ''), ue_legacy=(False, ''))
+
+    def tearDown(self): os.environ.pop('DM_GAMES_DIR', None)
+
+    def port(self, src, lost=()):
+        p = pipeline.Port(pipeline.Options(Path(tempfile.mkdtemp(prefix='nx2a_test_port_'))))
+        d = profile_dir([('status', 'boots')])
+        p.g = game.load(d.name)
+        p.game = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
+        (p.game / 'ExeFS').mkdir(); (p.game / 'RomFS').mkdir()
+        p.app_name, p.tools, p.lost = 'Test Game', {}, list(lost)
+        with mock.patch.object(pipeline.profile_guess, 'build_sources', return_value=src), \
+             mock.patch.object(pipeline, 'oodle_where', return_value='local'):
+            p.check_graphics()
+        return p
+
+    def test_a_pure_unreal_game_does_not_start_the_own_decoder(self):
+        p = self.port(self.SRC_UE)
+        self.assertIsNone(p.oodle_run)   # the split gets no decoder
+        self.assertTrue(p.ue_why)         # the UE rounds decode the shader code archives
+
+    def test_a_game_with_oodle_entries_keeps_the_own_decoder(self):
+        p = self.port(self.SRC_GFPAK)
+        self.assertIsNotNone(p.oodle_run)
+        self.assertTrue(p.oodle_why)
+
+    def test_a_dump_the_profile_does_not_register_stops_before_the_decoder(self):
+        with self.assertRaises(pipeline.BuildError) as e:
+            self.port(self.SRC_UE, lost=['main build 736837af… is not the tested b7f965b9… and has none of its 1 registered patches (nninitStartup)'])
+        self.assertIn('nninitStartup', str(e.exception))
+        self.assertIn('version the profile registers', str(e.exception))
+
+    def test_a_registered_build_goes_on(self):
+        p = self.port(self.SRC_UE)   # no lost patches: the port goes on
+        self.assertIsNone(p.oodle_run)
+
+
 class Misc(unittest.TestCase):
     def test_config_roundtrip(self):
         config.set_value('device', 'abc:5555'); self.assertEqual(config.load()['device'], 'abc:5555')
@@ -485,6 +540,16 @@ class Misc(unittest.TestCase):
         self.assertFalse(pipeline.Options(Path(".")).app)   # the pipeline's own default is untouched: the CLI decides the mode
         err = io.StringIO()
         with contextlib.redirect_stderr(err), self.assertRaises(SystemExit): cli._parser().parse_args(['port', 'x', '--app', '--game-apk'])
+
+    def test_sysdata_no_firmware_text(self):   # the [RED] line without --firmware: MiiModel's wording as before; the shared fonts say what the host draws instead
+        mii = pipeline.sysdata_no_firmware('Mario Kart 8 Deluxe', [0x0100000000000802])
+        self.assertEqual(mii, 'Mario Kart 8 Deluxe reads system data from the console\'s firmware (0100000000000802); without --firmware <your firmware dump\'s system content folder> '
+                              'the host\'s stand-in is used and those parts draw nothing (MiiModel: the Mii heads)')
+        fonts = pipeline.sysdata_no_firmware('Kirby', [0x0100000000000811, 0x0100000000000810])
+        self.assertIn('(0100000000000811, 0100000000000810)', fonts); self.assertIn('--shared-font <ttf>', fonts); self.assertIn('stand-ins', fonts)
+        self.assertNotIn('MiiModel', fonts); self.assertNotIn('\n', fonts)
+        both = pipeline.sysdata_no_firmware('X', [0x0100000000000802, 0x0100000000000810])
+        self.assertIn('MiiModel: the Mii heads', both); self.assertIn('(0100000000000810)', both)
 
     def test_shared_font_option(self):   # --shared-font FILE: parsed, and a file that is not a .ttf fails before any stage
         from porter import cli
@@ -698,7 +763,17 @@ class Dumps(unittest.TestCase):   # porter/dumps.py: NSZ / XCZ → NSP; an NCZ m
         secure = _hfs0([(self.name + '.ncz', self.block), ('0100000000aaa0000000000000000000.tik', b't' * 0x2c0)])
         root = _hfs0([('update', _hfs0([])), ('secure', secure)])
         x = bytearray(0x200); x[0x100:0x104] = b'HEAD'; x[0x130:0x138] = struct.pack('<Q', 0x200)
-        (self.d / 'g.xcz').write_bytes(bytes(x) + root); self.check(self.d / 'g.xcz')
+        for key_area in (False, True):   # identification accepts both card layouts; decompression must read the same secure partition
+            with self.subTest(key_area=key_area):
+                src = self.d / 'g.xcz'; src.write_bytes(bytes(0x1000 if key_area else 0) + bytes(x) + root)
+                app, fam = pipeline.nsp.scan_nsps(self.d, ('xcz',))
+                self.assertEqual(app, 0x0100000000AAA000); self.assertEqual(fam['base'], src)
+                self.check(src)
+
+    def test_xcz_without_card_header_is_rejected(self):
+        src = self.d / 'bad.xcz'; src.write_bytes(bytes(0x2000))
+        with self.assertRaisesRegex(pipeline.BuildError, 'no card header'): self.dumps.decompress(src, self.d / 'out.nsp')
+        self.assertFalse((self.d / 'out.nsp').exists()); self.assertFalse((self.d / 'out.nsp.partial').exists())
 
     def test_damage_is_found(self):   # a changed byte: a zstd error, or an NCA whose SHA-256 is not its name; either way a BuildError and no NSP
         for ncz, at in ((self.solid, 0x4000 + 16 + 0x80 + 40), (self.block, -1), (self.block, 0x4000 + 16 + 0x80 + 24 + 100)):
@@ -872,7 +947,7 @@ class UnrealShaders(unittest.TestCase):
             self.oodle_where = 'here'
             self.answers, self.asked = answers, []   # answers: the raw bytes each stream decodes to (missing: the decoder fails)
             for d in (self.dirs['v1'] / 'RomFS', self.dirs['v1'] / 'ExeFS', self.work / 'tmp', self.logs): d.mkdir(parents=True, exist_ok=True)
-        def oodle_job(self, job, out, bnsh=False):
+        def device_oodle_job(self, job, out, bnsh=False):
             """the game's own Oodle decoder: the job's streams, decoded (a stream it fails on comes back with no bytes)"""
             b = job.read_bytes(); n = struct.unpack_from('<I', b, 4)[0]; o = 8; recs = []
             for _ in range(n):
@@ -884,8 +959,8 @@ class UnrealShaders(unittest.TestCase):
                 got = self.answers.get(comp, b'')
                 ans += struct.pack('<I', len(got)) + got
             out.write_bytes(ans)
-        def device_oodle_job(self, job, out, bnsh=False):   # the same decoder, run on the device (upstream's pipeline.py calls it by this name)
-            return self.oodle_job(job, out, bnsh)
+        def oodle_job(self, job, out, bnsh=False):   # this line's name for it: the same decoder (upstream's pipeline calls it by that name)
+            return self.device_oodle_job(job, out, bnsh)
 
     def uepak_job(self, rounds):
         """what uepak.job does: it asks its decoder for the streams of this round (rounds: a list of stream lists, one per round) and it lists the archives"""
@@ -905,6 +980,7 @@ class UnrealShaders(unittest.TestCase):
     def port(self, rounds, answers, stamp_size=None, root=None):
         """a port with the fake decoder and the fake archives"""
         root = root or Path(tempfile.mkdtemp(prefix='nx2a_test_ue_'))
+        self.addCleanup(shutil.rmtree, root, True)
         p = self.FakePort(root, answers)
         p.root = root
         (p.dirs['v1'] / 'RomFS' / 'Content').mkdir(parents=True, exist_ok=True)

@@ -90,7 +90,7 @@ static int load(void) {
     if (F.state) return F.state > 0;
     if (!device_ok()) return 0;
     const char *path = getenv("DM_LSFG_DLL");
-    if (!path || !*path) { unavailable("%s", "no Lossless.dll (the app looks in Documents/Emulation/bios, Switch and Download, or pick one in the drawer)"); return 0; }
+    if (!path || !*path) { unavailable("%s", "no Lossless.dll (the app looks in Documents/Emulation/bios, Switch and Download, or pick one on the settings page)"); return 0; }
     double t0 = mono_s();
     int r = lsfg_dll_load(path, &F.mods);
     if (r) { char b[200]; snprintf(b, sizeof b, "%s: %s", path, lsfg_status_name(r)); unavailable("%s", b); return 0; }
@@ -183,6 +183,9 @@ int dm_fg_frame(vkimg_t *im, const int *crop, double period, VkImage gen[3], dou
     // The floor for the game's own rate (DM_LSFG_MIN_FPS, default 30): the generation's work must not push the game under it
     F.pacer.min_base = 30.0f;
     { const char *e = getenv("DM_LSFG_MIN_FPS"); if (e && atoi(e) > 0) F.pacer.min_base = (float)atoi(e); }
+    // Decoupled (the pacer's other measure of the game's own rate): a game whose speed follows its measured rate keeps its speed at any rate, so a
+    // slower base does not slow it down. Every game here is held by a limiter or by its own engine, so a slower base slows it too: not decoupled.
+    F.pacer.decoupled = 0;
     lsfg_plan plan = lsfg_pacer_plan(&F.pacer, LSFG_MAX_GENERATIONS, mult, target, mono_s());
     uint64_t count = F.count++;
     int warm = plan.warm && count + 1 >= 2;

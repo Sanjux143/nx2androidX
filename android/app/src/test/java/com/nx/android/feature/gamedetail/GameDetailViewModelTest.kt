@@ -2,9 +2,13 @@ package com.nx.android.feature.gamedetail
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
+import android.net.Uri
+import com.nx.android.data.saves.SaveIo
 import com.nx.android.domain.playback.RunOptionsRepository
 import com.nx.android.domain.playback.RunOptionsSnapshot
 import com.nx.android.domain.saves.SaveRepository
+import com.nx.android.domain.saves.SaveSource
+import com.nx.android.domain.saves.SaveTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -24,8 +28,8 @@ class GameDetailViewModelTest {
         val options = FakeRunOptionsRepository()
         val store = ViewModelStore()
         try {
-            val first = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), options)
-            val second = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), options)
+            val first = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options)
+            val second = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options)
             store.put("detail-one", first)
             store.put("detail-two", second)
             val firstPack = File("/games/one")
@@ -68,15 +72,16 @@ class GameDetailViewModelTest {
 
     private class FakeSaveRepository : SaveRepository {
         override fun titleIdInPackage(name: String): String? = null
-        override fun packagesDirectory(): File = File("/packages")
-        override suspend fun listPackages(): List<File> = emptyList()
-        override suspend fun listBackups(packSaves: File): List<File> = emptyList()
-        override suspend fun treeSize(file: File): Long = 0
-        override suspend fun export(titleId: String, gameName: String, packSaves: File): Result<File> = Result.failure(UnsupportedOperationException())
-        override suspend fun import(titleId: String, packageFile: File, packSaves: File): Result<String?> = Result.failure(UnsupportedOperationException())
-        override suspend fun restore(titleId: String, backup: File, packSaves: File): Result<String?> = Result.failure(UnsupportedOperationException())
-        override suspend fun prepareBackupShare(titleId: String, gameName: String, backup: File, packSaves: File): Result<File> = Result.failure(UnsupportedOperationException())
-        override suspend fun delete(file: File, packSaves: File): Boolean = false
+        override fun suggestedPackageName(titleId: String, gameName: String): String = "save.zip"
+        override suspend fun export(titleId: String, gameName: String, target: SaveTarget): Result<Unit> =
+            Result.failure(UnsupportedOperationException())
+        override suspend fun import(titleId: String, source: SaveSource): Result<Unit> =
+            Result.failure(UnsupportedOperationException())
+    }
+
+    private class FakeSaveIo : SaveIo {
+        override fun target(uri: Uri): SaveTarget = throw UnsupportedOperationException()
+        override fun source(uri: Uri): SaveSource = throw UnsupportedOperationException()
     }
 
     private companion object {

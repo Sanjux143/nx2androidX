@@ -1,5 +1,5 @@
 # nxnative/dm/gfx/tools/uepak.py: the AES-256 ECB decryption of an encrypted Unreal pak index, on a machine that has no CommonCrypto
-# (the porter reads the pak where the game is: the phone app's own machine. python -m unittest discover tests).
+# (the porter reads the pak where the game is: the phone app's own machine or a Windows or Linux PC. python -m unittest discover tests).
 import sys, unittest
 from pathlib import Path
 from unittest import mock
@@ -30,7 +30,7 @@ class Aes(unittest.TestCase):
         if not self.has_provider(): self.skipTest('neither CommonCrypto nor pycryptodome is here')
         self.assertEqual(uepak.aes_decrypt(KEY, PLAIN).hex(), CIPHER)
 
-    def test_without_commoncrypto(self):   # the phone app has no libSystem: pycryptodome does the same work
+    def test_without_commoncrypto(self):   # a PC or the phone app has no libSystem: pycryptodome does the same work
         try: import Crypto.Cipher.AES   # noqa: F401
         except ImportError: self.skipTest('pycryptodome is not installed')
         with mock.patch.object(uepak.ctypes, 'CDLL', side_effect=OSError('no libSystem here')):

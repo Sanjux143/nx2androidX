@@ -56,20 +56,28 @@ data class GameConfig(
     val fps60: Boolean = false,
     val experimental: Boolean = false,
     val aliasHeadroom: Int = ALIAS_AUTO,
+    /** 玩家自己的系统字体（.ttf 的路径）：空 = 用 App 自带的那份（包里带 CJK 字形） */
+    val sharedFont: String = "",
+    /** 多线程回放：游戏的 Vulkan 命令录到自己的线程上（热闹场景里更快；要关掉得重新移植） */
+    val mtReplay: Boolean = false,
 )
 
 /**
  * 按游戏配置的存取：JSON 一个游戏一条。纯值，不碰 Android，测试跑在 JVM 上。
- * 旧版本存下的配置没有 "alias" 这一项，读出来是 Auto，构建行为与那时一致。
+ * 旧版本存下的配置没有 "alias" 这一项，读出来是 Auto，构建行为与那时一致；
+ * "font" / "mt" 同样是新加的，老配置读出来是"没填 / 关"。
+ * 固件不是按游戏的：它是整机级的一份（环境里导入，移植时统一带上），所以不在这里。
  */
 object GameConfigJson {
 
     fun encode(c: GameConfig): JSONObject = JSONObject()
         .put("touch", c.touch).put("fps60", c.fps60).put("exp", c.experimental)
         .put("alias", c.aliasHeadroom)
+        .put("font", c.sharedFont).put("mt", c.mtReplay)
 
     fun decode(o: JSONObject): GameConfig = GameConfig(
-        o.optBoolean("touch"), o.optBoolean("fps60"), o.optBoolean("exp"), o.optInt("alias", ALIAS_AUTO))
+        o.optBoolean("touch"), o.optBoolean("fps60"), o.optBoolean("exp"), o.optInt("alias", ALIAS_AUTO),
+        o.optString("font", ""), o.optBoolean("mt", false))
 }
 
 /** Moves filename-keyed legacy options to title IDs once the library can identify their games. */
@@ -101,6 +109,8 @@ data class Ported(
     val playerApiRevision: Int = 0, // Missing or invalid revisions require a runtime update.
     val display: String = "", // 清单里的显示版本（游戏自己的版本号，如 1.1.1）：老的数据包没有这一项
     val romfsAt: String = "", // 清单里的 romfs_at：游戏的文件不在包里，在工作区（老的数据包没有这一项：它们自带 RomFS）
+    val graphics: String = "", // 清单里的 graphics：游戏自己用的图形接口（vulkan / gl / nvn，空 = 不知道；老的数据包没有这一项）
+    val lan: Boolean? = null, // 清单里的 lan：游戏能不能局域联机（null = 清单里没有这一项：老的数据包，由档案补上）
 ) {
     /** The pack has its host: it is a port, not a leftover manifest. */
     val hasHost: Boolean get() = host.isFile

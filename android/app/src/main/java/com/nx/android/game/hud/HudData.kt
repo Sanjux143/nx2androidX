@@ -36,6 +36,7 @@ data class HudSample(
     val gameFps: Double? = null,
     val presentedFps: Double? = null,
     val frameMs: Double? = null,
+    val fgState: Int? = null,
     val cpuPercent: Float? = null,
     val gpuPercent: Float? = null,
     val appRamMb: Long? = null,
@@ -68,6 +69,15 @@ object HudData {
     /** What a field reads when the device does not offer it */
     const val PLACEHOLDER = "—"
 
+    /** The host's frame generation states (dm_framegen.h): off, generating, on but not generating, unavailable */
+    const val FG_OFF = 0
+    const val FG_GENERATING = 1
+    const val FG_ON = 2
+    const val FG_UNAVAILABLE = -1
+
+    /** The host's status line ("<state> <reason>"): its state, null when there is none */
+    fun fgState(status: String?): Int? = status?.trim()?.substringBefore(' ')?.toIntOrNull()
+
     /**
      * The frame rate between two host samples: the game's own frames a second, what reaches the screen with the
      * frame generation on (both together), and the mean frame time (the intervals between the game's frames).
@@ -92,6 +102,10 @@ object HudData {
      * shows what reaches the screen — one number, the presented rate (the game's own frames and the generated
      * ones). The game's own rate is not shown beside it: the player would have to work out which of the two is
      * the one they feel, and the frame time (the game's own frame interval) would not match it.
+     *
+     * The label follows the host's state, not whether frames happened to be generated in the last second: the
+     * generation holds itself back now and then (the game's rate is not steady enough, or the panel has no
+     * refresh left), and a label that blinked with it told the player nothing.
      */
     fun render(
         s: HudSample,
@@ -100,22 +114,25 @@ object HudData {
         engineLabel: String? = null,
         chargingText: String = "charging",
     ): List<HudLine> {
-        // the frame generation is adding frames: the presented rate is above the game's own, and the frame time
-        // (the game's own frame interval) does not belong next to it
-        val generating = s.presentedFps != null && s.gameFps != null && s.presentedFps > s.gameFps + 0.5
+        val fgOn = s.fgState == FG_GENERATING || s.fgState == FG_ON
+        val label = when {
+            fgOn -> engineLabel ?: "LSFG"
+            s.fgState != null && s.fgState < 0 -> "no LSFG"
+            else -> null
+        }
         return HudField.entries.filter { it in fields }.map { field ->
             when (field) {
                 HudField.FPS -> {
                     val text = when {
                         s.gameFps == null -> PLACEHOLDER
                         else -> {
-                            val fps = if (s.presentedFps != null) s.presentedFps else s.gameFps
-                            (if (generating && engineLabel != null) "$engineLabel " else "") + "${fps.toInt()} fps"
+                            val fps = if (fgOn && s.presentedFps != null) s.presentedFps else s.gameFps
+                            (if (label != null) "$label " else "") + "${fps.toInt()} fps"
                         }
                     }
                     HudLine(text, HudRole.ACCENT)
                 }
-                HudField.FRAME_TIME -> if (generating) null else HudLine(s.frameMs?.let { num("%.1f ms", it) } ?: PLACEHOLDER, HudRole.PLAIN)
+                HudField.FRAME_TIME -> if (fgOn) null else HudLine(s.frameMs?.let { num("%.1f ms", it) } ?: PLACEHOLDER, HudRole.PLAIN)
                 HudField.CPU -> HudLine(s.cpuPercent?.let { num("CPU %.0f%%", it) } ?: "CPU $PLACEHOLDER", HudRole.PLAIN)
                 HudField.GPU -> HudLine(s.gpuPercent?.let { num("GPU %.0f%%", it) } ?: "GPU $PLACEHOLDER", HudRole.PLAIN)
                 HudField.APP_RAM -> HudLine(s.appRamMb?.let { num("RAM %d MB", it) } ?: "RAM $PLACEHOLDER", HudRole.PLAIN)

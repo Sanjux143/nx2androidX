@@ -57,12 +57,15 @@ class RuntimeUpdateService : Service() {
             .build())
         working = true
         val pack = state.pack
+        // 玩家点了「用当前档案继续」时这一轮才带上这个开关（第一次不带：照旧失败并说清原因）。
+        // 这个选择只对这一次有效：别的重试照旧按档案核对。
+        val allowDrift = state.takeDrift()
         val handler = Handler(mainLooper)
         Thread {
-            val result = compiler.rebuild(pack)
+            val result = compiler.rebuild(pack, allowProfileDrift = allowDrift)
             handler.post {
                 working = false
-                state.finish(result.success, result.reason)
+                state.finish(result.success, result.reason, result.profileDrift)
                 library.rescan()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()

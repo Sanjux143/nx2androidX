@@ -44,7 +44,8 @@ import javax.inject.Singleton
 class LibraryState @Inject constructor(private val port: PortState,
                    private val libraryRepository: GameLibraryRepository,
                    private val configRepository: GameConfigRepository,
-                   private val operations: LibraryOperationCoordinator) {
+                   private val operations: LibraryOperationCoordinator,
+                   private val profiles: com.nx.android.data.library.ProfileReader) {
 
     /** 库里的卡：一个游戏一张 */
     var games by mutableStateOf(listOf<GameEntry>()); private set
@@ -106,6 +107,9 @@ class LibraryState @Inject constructor(private val port: PortState,
 
     /** 这个游戏在各个卷上的数据包（每个卷可能各有一份） */
     fun packsOf(e: GameEntry): List<File> = libraryRepository.packsOf(e)
+
+    /** 这个游戏需要什么：App 自带的档案（图形接口、联机、设备要求） */
+    fun profileOf(titleId: String): com.nx.android.data.library.GameProfile? = profiles.of(titleId)
 
     /** 这个游戏的状态 */
     fun statusOf(e: GameEntry): GameStatus =

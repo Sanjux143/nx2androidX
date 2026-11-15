@@ -74,6 +74,35 @@ class EnvCheckTest {
     }
 
     @Test
+    fun `the chip is a hint when the machine's firmware is not imported`() {
+        // 固件是可选的：缺了它 App 照样能用，所以是黄的，不是红的
+        assertEquals(
+            EnvCheck.Chip.HINT,
+            EnvCheck.chip(envReady = true, keysOk = true, firmwareImported = false),
+        )
+    }
+
+    @Test
+    fun `the chip is ready again once the firmware is imported`() {
+        assertEquals(
+            EnvCheck.Chip.READY,
+            EnvCheck.chip(envReady = true, keysOk = true, firmwareImported = true),
+        )
+    }
+
+    @Test
+    fun `a missing firmware does not hide a missing environment`() {
+        assertEquals(
+            EnvCheck.Chip.NOT_READY,
+            EnvCheck.chip(envReady = false, keysOk = true, firmwareImported = false),
+        )
+        assertEquals(
+            EnvCheck.Chip.NOT_READY,
+            EnvCheck.chip(envReady = true, keysOk = false, firmwareImported = false),
+        )
+    }
+
+    @Test
     fun `a row that passed is ok`() {
         val r = rows("""[{"name": "Python", "ok": true, "detail": "3.13.5", "required": true}]""").first()
         assertEquals(EnvCheck.Level.OK, r.level)

@@ -17,6 +17,10 @@ from porter.revision import PLAYER_API_REVISION
 HOOKS = ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so')
 
 
+class ProfileDrift(ValueError):
+    """The pack was built with a profile that no longer exists; the player may choose the profile the game has now."""
+
+
 def profile_candidates(title_id):
     """Where the profile this pack was built with may live: the workspace's own copies first (the headroom copy,
     the derived one, the provisional one), then the payload's registered profile."""
@@ -39,22 +43,28 @@ def profile_fingerprint(directory):
         return hashlib.sha256(header.read_bytes()).hexdigest()
 
 
-def find_profile(title_id, expected):
+def find_profile(title_id, expected, allow_drift=False):
     """(the profile to rebuild with, its fingerprint, whether any candidate was there at all)
 
     A pack that recorded no fingerprint (made before the profiles were fingerprinted) cannot be checked: it gets
     the first profile there is, and the fingerprint of that one is recorded when the runtime is rebuilt. The player
     is told to port the game again if it misbehaves afterwards."""
     found = False
+    first = None
     for candidate in profile_candidates(title_id):
         fingerprint = profile_fingerprint(candidate)
         if fingerprint is None: continue
         found = True
+        if first is None: first = (candidate, fingerprint)
         if expected is None or fingerprint == expected: return candidate, fingerprint, True
+    if allow_drift and first is not None:
+        # 没有一份对得上，但玩家让 App 用当前档案继续：这份就是这个游戏现在在用的档案
+        # （完整重新移植用的也是它），重建出来的运行库与重移植是同一个东西。
+        return first[0], first[1], True
     return None, None, found
 
 
-def rebuild(pack, *, no_lsfg=False, jobs=None, emit=print):
+def rebuild(pack, *, no_lsfg=False, jobs=None, allow_profile_drift=False, emit=print):
     pack = Path(pack).resolve()
     expected = os.environ.get('NX2A_PLAYER_API_REVISION')
     if expected is not None and expected != str(PLAYER_API_REVISION):
@@ -66,11 +76,13 @@ def rebuild(pack, *, no_lsfg=False, jobs=None, emit=print):
         raise ValueError('Invalid game identity. Port the game again from its original files.')
     fingerprint = manifest.get('profile_h')
     if not isinstance(fingerprint, str) or not fingerprint: fingerprint = None   # an old pack: trusted, not checked
-    profile, chosen, found = find_profile(title_id, fingerprint)
+    profile, chosen, found = find_profile(title_id, fingerprint, allow_drift=allow_profile_drift)
     if profile is None:
         if not found:
             raise ValueError('No game profile for this game. Port the game again from its original files.')
-        raise ValueError('The game profile changed since this pack was built. Port the game again from its original files.')
+        raise ProfileDrift('The game profile changed since this pack was built.')
+    if fingerprint is not None and chosen != fingerprint:
+        emit('The game profile changed since this pack was built. Rebuilding the runtime with the current profile.')
     ndk, _ = toolchain.find_ndk(config.load())
     if ndk is None:
         raise ValueError('The Android compiler is unavailable. Prepare the environment and retry.')

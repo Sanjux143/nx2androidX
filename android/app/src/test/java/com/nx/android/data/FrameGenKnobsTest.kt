@@ -16,13 +16,32 @@ class FrameGenKnobsTest {
     }
 
     @Test
-    fun `env lines carry the switch, the knobs and the dll only when there is one`() {
-        assertEquals(0, FrameGenKnobs(false, 3, 60, 25).envLines(null).size)   // off: no rows at all
+    fun `env lines carry the switch, the knobs and the dll`() {
+        assertEquals(0, FrameGenKnobs(false, 3, 60, 25).envLines(null).size)   // off and no DLL: no rows at all
         val k = FrameGenKnobs(true, 3, 60, 25)
         assertEquals(listOf("DM_LSFG=1", "DM_LSFG_MULT=3", "DM_LSFG_TARGET=60", "DM_LSFG_FLOW=25"), k.envLines(null).toList())
         assertEquals(listOf("DM_LSFG=1", "DM_LSFG_MULT=3", "DM_LSFG_TARGET=60", "DM_LSFG_FLOW=25", "DM_LSFG_DLL=/data/lsfg/Lossless.dll"),
                      k.envLines("/data/lsfg/Lossless.dll").toList())
         assertEquals(0, FrameGenKnobs(false, 9, 60, 25).envLines(null).size)   // off: no rows, whatever the knobs hold
+    }
+
+    @Test
+    fun `the dll's path goes to the host even when the generation is off`() {
+        // the player turns the generation on in the drawer, with the game running: the host has to know the file then
+        assertEquals(listOf("DM_LSFG_DLL=/data/lsfg/Lossless.dll"),
+                     FrameGenKnobs(false, 2, 0, 0).envLines("/data/lsfg/Lossless.dll").toList())
+        // no file on the device: nothing to hand over
+        assertEquals(0, FrameGenKnobs(false, 2, 0, 0).envLines(null).size)
+    }
+
+    @Test
+    fun `the flow's default is half the picture, not the game's own resolution`() {
+        // the default the settings fall back to: 50%, not auto (the game's own resolution: at 1080p the full-size flow
+        // costs more than the frame it buys)
+        assertEquals(50, FrameGenKnobs.DEFAULT_FLOW)
+        assertTrue(FrameGenKnobs(true, 2, 0, FrameGenKnobs.DEFAULT_FLOW).envLines(null).contains("DM_LSFG_FLOW=50"))
+        // auto is still one of the choices (0 = the game's own resolution), it is just not the default any more
+        assertEquals(0, FrameGenKnobs.clampFlow(0))
     }
 
     @Test

@@ -16,6 +16,7 @@ tested	4.0.0 RedMagic NX809J (Adreno 840, Android 16)
 package	org.nx2a.scarlet
 orientation	landscape
 requires	bcn
+graphics	nvn
 setting	docked=0
 setting	fps=1
 env	DM_FPS_TARGET=0

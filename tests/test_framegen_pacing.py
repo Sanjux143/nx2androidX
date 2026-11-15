@@ -133,17 +133,29 @@ int main(void) {
     for (int i = 0; i < 240; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 60, t); t += 1.0 / 30.0; }
     assert(pl.generations == 1);           // one generated frame per game frame: 30 + 30 = 60 fps on the screen
 
-    // the floor: the generation's own work slows the game under it -> the generation stops and the game runs at its own rate again
+    // the generation's own cost: the game runs at 60 without it and collapses to 20 with it -> the generation is held back
+    // (a second under the floor, then the back-off) and comes back when the game does
     lsfg_pacer_reset(&p);
     p.min_base = 30.0f;
     t = 100.0;
     for (int i = 0; i < 20; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 60.0; }
-    assert(pl.generations == 1);           // the generation runs while the game keeps its rate
-    for (int i = 0; i < 30; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 20.0; }
-    assert(pl.generations == 0);           // under the floor: no generation, the game runs at its own rate
-    assert(p.unloaded_base_rate > 50.0f);  // the reference (the game without the generation) did not follow it down
-    for (int i = 0; i < 60; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 60.0; }
-    assert(pl.generations == 0);           // the game is back at its own rate; the back-off still holds the generation off
+    assert(pl.generations == 1);            // the generation runs while the game keeps its rate
+    for (int i = 0; i < 10; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 20.0; }
+    assert(pl.generations == 1);            // half a second under the floor: it still generates (one slow frame does not stop it)
+    for (int i = 0; i < 60; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 20.0; }
+    assert(pl.generations == 0);            // a second under: the generation is held back, the game runs at its own rate
+    assert(p.unloaded_base_rate > 50.0f);   // the reference (the game without the generation) did not follow it down
+    for (int i = 0; i < 400; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 60.0; }
+    assert(pl.generations == 1);            // the back-off is over and the game is at its own rate: the generation is back
+
+    // decoupled (the game's speed follows its measured rate, so a slower base does not slow it down): the floor is what holds it back
+    lsfg_pacer_reset(&p);
+    p.decoupled = 1; p.min_base = 30.0f;
+    t = 100.0;
+    for (int i = 0; i < 20; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 60.0; }
+    assert(pl.generations == 1);            // the generation runs while the game stays above the floor
+    for (int i = 0; i < 90; i++) { pl = lsfg_pacer_plan(&p, 3, 2, 0, t); t += 1.0 / 20.0; }
+    assert(pl.generations == 0);            // under the floor for a second: the generation is held back
 
     // the mode change (the drawer's live switch): the multiplier's limit does not carry over to the target rate
     lsfg_pacer_reset(&p);

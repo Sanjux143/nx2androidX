@@ -34,11 +34,16 @@ object EnvCheck {
      * limit on the app's child processes is the third - a hint, not a failure, so it only colours a chip that
      * would otherwise be green.
      *
+     * The firmware is a fourth, the same kind of hint: it is optional (only a game that reads the console's
+     * system data needs it), so a missing one is amber, not red - the app works without it.
+     *
      * @param phantom the limit's state, null when it has not been read yet: the chip must not flash amber
      *   while the answer is still on its way
+     * @param firmwareImported whether the machine's firmware has been imported
      */
-    fun chip(envReady: Boolean, keysOk: Boolean, phantom: PhantomCheck.Status? = null): Chip = when {
+    fun chip(envReady: Boolean, keysOk: Boolean, phantom: PhantomCheck.Status? = null, firmwareImported: Boolean = true): Chip = when {
         !envReady || !keysOk -> Chip.NOT_READY
+        !firmwareImported -> Chip.HINT
         phantom == PhantomCheck.Status.ON || phantom == PhantomCheck.Status.UNKNOWN -> Chip.HINT
         else -> Chip.READY
     }

@@ -14,7 +14,6 @@ import com.nx.android.domain.saves.SaveOperationException
  */
 fun failureText(locale: AppLocale, e: Throwable): String = when (e) {
     is SaveOperationException -> when (e.reason) {
-        SaveOperationException.Reason.GAME_RUNNING -> locale.str(R.string.lib_game_running_hint)
         SaveOperationException.Reason.TITLE_MISMATCH -> locale.str(R.string.lib_other_games_save, e.message.orEmpty())
         SaveOperationException.Reason.NO_SAVES -> locale.str(R.string.lib_no_saves)
         else -> locale.str(R.string.common_error_unknown_reason)

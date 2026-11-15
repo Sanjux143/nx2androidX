@@ -38,10 +38,10 @@ object LogBundle {
      * @param tag what the bundle is about (the game, the build), for the file's name
      */
     fun build(context: Context, work: File, buildLogs: List<Pair<String, File>>, out: File, tag: String = ""): File? =
-        build(deviceText(context), AppVersion.of(context), work, buildLogs, out, tag)
+        build(deviceText(context), AppVersion.of(context), work, buildLogs, out, tag, File(context.filesDir, "nx2a/port_exit.txt"))
 
     /** The bundle itself: the device's facts as text (the app's own context gives them) */
-    fun build(device: String, version: String, work: File, buildLogs: List<Pair<String, File>>, out: File, tag: String = ""): File? {
+    fun build(device: String, version: String, work: File, buildLogs: List<Pair<String, File>>, out: File, tag: String = "", portStatus: File? = null): File? {
         val stages = stageLogs(work)
         val main = AppLog.logFile()?.takeIf { it.isFile && it.length() > 0 }   // an empty log is no log
         if (stages.isEmpty() && buildLogs.isEmpty() && main == null) return null
@@ -52,7 +52,10 @@ object LogBundle {
         if (main != null) files.add(Triple("log.txt", main, MAIN_LIMIT))
         for ((name, file) in stages) files.add(Triple(name, file, STAGE_LIMIT))
         for ((name, file) in buildLogs) files.add(Triple("builds/$name", file, STAGE_LIMIT))
-        return pack(out, fileName(version, tag), listOf("device.txt" to device), files)
+        val texts = mutableListOf("device.txt" to device)
+        // how the last port ended: a port the system killed (out of memory) says so here, the porter itself had no chance to write it
+        portStatus?.takeIf { it.isFile && it.length() > 0 }?.let { texts.add("port.txt" to it.readText()) }
+        return pack(out, fileName(version, tag), texts, files)
     }
 
     /**
@@ -142,6 +145,38 @@ object LogBundle {
         } catch (e: Exception) {
             null
         } else null)
+        val mem = memoryText()
+        if (mem.isNotBlank()) b.append(mem)
+        return b.toString()
+    }
+
+    /**
+     * The memory at the time of the bundle: the system's and the app's own processes. A port the system killed
+     * leaves no log of its own (the porter was gone with it), so this is what says it was the memory.
+     */
+    fun memoryText(): String {
+        val b = StringBuilder()
+        fun row(key: String, value: String?) {
+            if (!value.isNullOrBlank()) b.append(key).append(": ").append(value).append('\n')
+        }
+        try {
+            val info = File("/proc/meminfo").readText()
+            for (k in listOf("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")) {
+                val line = info.lines().firstOrNull { it.startsWith("$k:") } ?: continue
+                row(k, line.substringAfter(":").trim().substringBefore(" kB").trim() + " kB")
+            }
+        } catch (e: Exception) {
+        }
+        for (d in File("/proc").listFiles() ?: emptyArray()) {
+            if (!d.name.all { it.isDigit() }) continue
+            try {
+                val cmd = File(d, "cmdline").readText().replace('\u0000', ' ').trim()
+                if (!cmd.contains("nx.android") && !cmd.contains("python3.13") && !cmd.contains("dmhost") && !cmd.contains("shader_split")) continue
+                val rss = File(d, "status").readLines().firstOrNull { it.startsWith("VmRSS:") }?.trim() ?: ""
+                row("pid ${d.name}", "$rss  $cmd")
+            } catch (e: Exception) {
+            }
+        }
         return b.toString()
     }
 

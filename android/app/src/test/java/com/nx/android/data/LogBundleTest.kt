@@ -110,4 +110,26 @@ class LogBundleTest {
         assertTrue("what it is about is in the name: $name", name.contains("game-abcdef12"))
         assertTrue("the name is a zip: $name", name.endsWith(".zip"))
     }
+
+    @Test
+    fun thePortsExitStatusGoesIntoTheBundle() {
+        val work = tmp("work")
+        val out = tmp("out")
+        AppLog.init(tmpFile("log.txt", "something\n"))
+        val status = tmpFile("port_exit.txt", "port: killed by signal 9\ntime: 2026-11-13 22:12:17\n")
+
+        val zip = LogBundle.build("device\n", "0.3.0-alpha10", work, emptyList(), out, "", status)
+        assertNotNull("the bundle is packed", zip)
+        val entries = ZipFile(zip!!).use { z ->
+            z.entries().toList().associate { it.name to z.getInputStream(it).readBytes().toString(Charsets.UTF_8) }
+        }
+        assertTrue("the exit status is in it: ${entries.keys}", entries.containsKey("port.txt"))
+        assertTrue("the exit status is in it", entries["port.txt"]!!.contains("killed by signal 9"))
+    }
+
+    @Test
+    fun theMemorySnapshotIsTaken() {
+        val mem = LogBundle.memoryText()   // no /proc here: it must not throw
+        if (File("/proc/meminfo").isFile) assertTrue("the memory is in it: $mem", mem.contains("MemTotal"))
+    }
 }

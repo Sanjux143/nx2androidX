@@ -19,6 +19,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.nx.android.R
 import com.nx.android.core.ui.PreviewSurface
+import com.nx.android.core.ui.components.FirmwareHint
+import com.nx.android.core.ui.components.FirmwareRow
 import com.nx.android.core.ui.components.Hint
 import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.components.Section
@@ -173,6 +175,8 @@ internal fun KeysStep(
     uiState: OnboardingUiState,
     onChooseKeysFile: () -> Unit,
     onKeysSkippedChange: (Boolean) -> Unit,
+    firmware: String = "",
+    onChooseFirmwareFile: () -> Unit = {},
 ) {
     Section(stringResource(R.string.onb_prod_keys)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -200,6 +204,13 @@ internal fun KeysStep(
             }
         }
         Hint(stringResource(R.string.onb_keys_common_places))
+        // 固件（可选）：整机级的一份。读主机系统数据的游戏才需要它，导入了就用，不导入也能过
+        FirmwareRow(
+            imported = firmware,
+            onImport = onChooseFirmwareFile,
+            onClear = {},
+        )
+        FirmwareHint()
     }
 //    if (!uiState.keysOk && !uiState.keysChecking) {
 //        Row(verticalAlignment = Alignment.CenterVertically) {

@@ -5,7 +5,7 @@
 #   Games  the game profiles (porter profiles --all)
 #   Saves  a ported game's save between the device and the PC (porter saves): the save folders on the device, a fresh export to a folder here, an import of a
 #          folder or .zip (a console's save, or an export)
-import os, subprocess, sys, time
+import html, os, subprocess, sys, time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -98,6 +98,9 @@ class PortTab(QWidget):
         self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
         self.experimental = QCheckBox('Experimental: try a game that is not ported to Android yet (it may not start)')
         self.experimental.toggled.connect(lambda _: self.update_port_button())
+        self.vercode = QSpinBox(); self.vercode.setRange(0, 65535); self.vercode.setSpecialValueText('none'); self.vercode.setMaximumWidth(120)   # porter port --vercode-offset (0: none, or $NX2A_VERCODE_OFFSET)
+        self.vercode.setToolTip('Added to the APK\'s versionCode. Android does not install an APK over one with a higher versionCode;\n'
+                                'raise this to install a rebuild of the same game version over an earlier rebuild that had an offset, and keep its saves.')
         self.headroom = QSpinBox(); self.headroom.setRange(-1, 48); self.headroom.setSpecialValueText('Auto'); self.headroom.setValue(-1); self.headroom.setSuffix(' GB')
         self.headroom.setMaximumWidth(120)   # porter port --alias-headroom (Auto: none passed)
         headroom = with_info(self.headroom, 'Extra address space (the alias region) for a game that takes its memory as address regions.\n'
@@ -134,6 +137,7 @@ class PortTab(QWidget):
         split.addWidget(self.stages); split.addWidget(self.log); split.setSizes([180, 220])
         v.addWidget(split, 1)
         self.tick = QTimer(self); self.tick.timeout.connect(self.on_tick); self.tick.start(1000)
+        self.refresh_devices()
 
     # ---- the game file ----
     def pick_folder(self):
@@ -163,12 +167,15 @@ class PortTab(QWidget):
         if not d: return
         if not Path(d).exists(): self.card.setText(f'<span style="color:#c62828">Not found: {d}</span>'); return
         self.card.setText('Reading the game…')
-        call_json(self, ['inspect', d, '--json'], self.on_inspect)
+        def failed(message, code): self.on_inspect({'error': 'Could not inspect the game:\n' + message}, code)
+        call_json(self, ['inspect', d, '--json'], self.on_inspect, failed=failed)
 
     def on_inspect(self, info, code):
         err = info
         self.info = info = None if info and info.get('error') else info
-        if not info: self.card.setText('<span style="color:#c62828">' + ((err or {}).get('error') or 'No game found (an NSP, XCI, NSZ or XCZ with a title ID).') + '</span>'); return
+        if not info:
+            message = (err or {}).get('error') or 'No game found (an NSP, XCI, NSZ or XCZ with a title ID).'
+            self.card.setText('<span style="color:#c62828">' + html.escape(message).replace('\n', '<br>') + '</span>'); return
         a = info.get('android') or {}
         st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
         col = STATUS_COLOUR.get(st, '#c62828')
@@ -186,6 +193,17 @@ class PortTab(QWidget):
     def update_port_button(self):   # a supported game, or any game with Experimental ticked
         i = self.info or {}
         self.port_btn.setEnabled(bool(i.get('supported') or (i.get('experimental') and self.experimental.isChecked())) and not self.porter.running())
+
+    def refresh_devices(self):
+        cur = self.device.currentData() or config.load().get('device')
+        def got(rows, code):
+            self.device.clear()
+            for r in rows or []:
+                if r['state'] == 'device': self.device.addItem(f'{r["serial"]}  {r["info"]}', r['serial'])
+            if not self.device.count(): self.device.addItem('no device connected', '')
+            i = self.device.findData(cur)
+            if i >= 0: self.device.setCurrentIndex(i)
+        call_json(self, ['devices', '--json'], got)
 
     # ---- the port ----
     def start(self):

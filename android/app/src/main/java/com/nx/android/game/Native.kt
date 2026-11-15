@@ -19,7 +19,24 @@ object Native {
     @JvmStatic external fun setSurface(surface: Surface?)
     @JvmStatic external fun motion(source: Int, device: Int, action: Int, ids: IntArray, xs: FloatArray, ys: FloatArray, axis: FloatArray): Boolean
     @JvmStatic external fun key(device: Int, source: Int, code: Int, action: Int, meta: Int, repeat: Int): Boolean
+
+    /**
+     * 按键事件，带它的物理扫描码（手柄中心的绑定按它认键）。
+     * 老运行时的宿主没有这个入口（那边只有 [key]），所以 App 先看宿主有没有那几个新的入口，
+     * 有才用这个 —— 老包照旧能用，输入不会断。
+     */
+    @JvmStatic external fun keyScan(device: Int, source: Int, code: Int, scan: Int, action: Int, meta: Int, repeat: Int): Boolean
     @JvmStatic external fun lifecycle(ev: Int)
+
+    /**
+     * 实体手柄的映射表：手柄中心推给宿主的行式文本（pad_map.h 读它）。
+     * 一只设备一段：面键的翻法（labels）、摇杆死区（dz）、扳机阈值（tr），下面跟着它的绑定。
+     * 游戏启动时推一次，玩家改了键再推一次。
+     */
+    @JvmStatic external fun padMapping(spec: String)
+
+    /** 手柄上所有的键松开（手柄中心开着的时候输入是静音的：按住的键不能留在游戏里） */
+    @JvmStatic external fun padReleaseAll()
 
     /** 运行中抽屉的帧生成：即时下发（DM_CTL 的 env 行走不到 JNI，这里直达宿主）；"<state> <reason>" 见 dm_framegen.h */
     @JvmStatic external fun frameGenSet(on: Boolean, mult: Int, target: Int, flow: Int)
@@ -33,6 +50,34 @@ object Native {
 
     /** 宿主现在的档位（它读 DM_FPS_PIN；0 = 自由自适应） */
     @JvmStatic external fun perfPinGet(): Int
+
+    /**
+     * 运行中抽屉的体感开关：设备的转动带动游戏里的六轴传感器（王国之泪的弓）。
+     * 即时下发：宿主那边每 250 ms 重读一次环境变量（front_player.c 的 motion poll），所以改完立刻生效。
+     */
+    @JvmStatic external fun motionSet(on: Boolean, raw: Boolean)
+
+    /** 宿主现在的体感开关：位 1 = 体感开着，位 2 = 保留甩动方向 */
+    @JvmStatic external fun motionGet(): Int
+
+    /**
+     * 运行中抽屉的音频输出：游戏的声音走哪个设备（蓝牙耳机、USB 声卡…）。
+     * 宿主那边立刻换（hle_audio.c 把在播的流停掉、在新设备上重启），不用重启游戏。
+     * 0 = 跟随系统自己选。
+     */
+    @JvmStatic external fun audioSet(id: Int)
+
+    /** 宿主现在的音频输出设备（0 = 跟随系统） */
+    @JvmStatic external fun audioGet(): Int
+
+    /**
+     * 运行中抽屉的 GPU 提频："0" 关（用调频器自己的频率）、"1" 一直跑最高频、
+     * "auto" 只在掉帧时拉高。宿主每 60 帧重读一次这个环境变量，所以即时生效。
+     */
+    @JvmStatic external fun gpuTurboSet(mode: String)
+
+    /** 宿主现在的 GPU 提频档："0" / "1" / "auto" */
+    @JvmStatic external fun gpuTurboGet(): String
 
     /** 运行中抽屉的宿主菜单行（画面与操作/存档）：what 0 overlay 1 opacity 2 rumble 4 docked */
     @JvmStatic external fun menuGet(what: Int): Int

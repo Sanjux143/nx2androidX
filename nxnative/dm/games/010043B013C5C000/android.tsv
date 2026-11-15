@@ -5,6 +5,7 @@ package	org.nx2a.neo
 orientation	landscape
 # the textures are BC-compressed (Unity's Switch build)
 requires	bcn
+graphics	nvn
 # handheld (1280x720), as it was played on the Y700; docked (1920x1080) is a pause-menu switch away
 setting	docked=0
 setting	overlay=1
