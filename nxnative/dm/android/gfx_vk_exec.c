@@ -82,6 +82,9 @@ static int g_x_listpasses;
 uint64_t vk_replay_ns(void) { return g_vkst.ns_exec; }   // the replay time so far (gfx_vk_present.c: a frame's cost for the adaptive rate)
 // flicker experiments (DM_CTL env lines, read every submission): DM_VK_X_NOSETC no descriptor set reuse, DM_VK_X_NODRVC no driver segment reuse, DM_VK_X_LANDCUT deferred
 // uniform updates land at each cut, DM_VK_X_NOKEEP no pass kept for the same targets, DM_VK_X_NOSHC no shadow reuse
+int g_ubd_heap = 1;   // DM_VK_UBD_HEAP=0 (live): a deferred uniform update keeps no copy in ordinary memory, and the shadows read it back from scratch, as before (gfx_vk_core.c vk_sub_update)
+int g_pool_slots = 1;   // DM_VK_POOL_SLOTS=0 (live): gfx_vk_core.c vk_pool_of looks in the last four pools it found alone, without its 512 page slots (as before them)
+int g_x_inflkeep;   // DM_VK_UBD_KEEP=1 (live): every landed uniform update stays listed until its submission completes, as before (gfx_vk_core.c vk_ubd_land), for A/B runs
 static int g_fdz = 1;  // DM_VK_FDZ (live): fragment-depth variants for draws on depth written by fragment shaders (pipeline key fdz)
 enum { LRZ_READ = 2, LRZ_SWITCH = 4, LRZ_CUT = 8, LRZ_ALL = 14, LRZ_CUT_RD = 16, LRZ_CORNER = 32 };   /* LRZ_CUT_RD: only read at a cut; LRZ_CORNER: the last texel, not the first (tests) */   // DM_VK_LRZ_TOUCH bits: the read before a load pass, the write-back on a depth switch, the write-back at a cut
 static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_nodispbar; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
@@ -175,7 +178,7 @@ static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_
     g_x_nodispbar = (e = getenv("DM_VK_X_NODISPBAR")) && atoi(e);
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : 1; if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
-    g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
+    g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_x_inflkeep = (e = getenv("DM_VK_UBD_KEEP")) && atoi(e); g_ubd_heap = !((e = getenv("DM_VK_UBD_HEAP")) && !atoi(e)); g_pool_slots = !((e = getenv("DM_VK_POOL_SLOTS")) && !atoi(e)); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
     g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log, g_vk_samp_log_boot; static int first = 1;   // the first read sees the start-up value, which mtl_reg_samp (game threads, no setenv there) may have taken already: not armed twice
       if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { if (!(first && atoi(e) == g_vk_samp_log_boot)) g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } first = 0; } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
@@ -264,7 +267,7 @@ static void bind_chmask(uint32_t mask) {
 // frame); a VkRenderPass is made once per set of formats and load operations, and an imageless framebuffer once per set of attachment descriptions, and passes
 // then begin with vkCmdBeginRenderPass (the battle's replay went from about 20 to 17.5 ms a frame). Pipelines are made against a compatible render pass (the same
 // formats, every load operation LOAD). DM_VK_RP=0 (start-up): dynamic rendering
-typedef struct { uint32_t ncol, cfmt[8], cload[8], dfmt, dload, sload, dstore, samples; } rpkey;
+typedef struct { uint32_t ncol, cfmt[8], cload[8], dfmt, dload, sload, dstore, samples, cstore[8]; } rpkey;   // cstore: 0 (memset) STORE; DONT_CARE for slot 0's scratch (DM_VK_SLOT0_FILL)
 typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; struct { uint32_t usage, flags, w, h, layers, fmt, fmt2, fmt3, fmt4; } a[9]; } fbkey;   // fmt2..fmt4: a format-listed image's other formats (an imageless framebuffer names the image's whole list)
 static nvn_hmap g_rps = {.klen = sizeof(rpkey)}, g_fbs = {.klen = sizeof(fbkey)}; static pthread_mutex_t g_rp_mu = PTHREAD_MUTEX_INITIALIZER;
 // Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) passes must be render pass objects, whatever DM_VK_RP says (vk_init refuses a device with neither)
@@ -277,7 +280,7 @@ static VkRenderPass rp_get(const rpkey *k) {
         VkAttachmentDescription2 ad[9]; VkAttachmentReference2 cr[8], dr; uint32_t na = 0;
         for (uint32_t i = 0; i < k->ncol; i++) {
             if (!k->cfmt[i]) { cr[i] = (VkAttachmentReference2){VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, NULL, VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT}; continue; }
-            ad[na] = (VkAttachmentDescription2){VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, NULL, 0, (VkFormat)k->cfmt[i], (VkSampleCountFlagBits)k->samples, (VkAttachmentLoadOp)k->cload[i], VK_ATTACHMENT_STORE_OP_STORE,
+            ad[na] = (VkAttachmentDescription2){VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, NULL, 0, (VkFormat)k->cfmt[i], (VkSampleCountFlagBits)k->samples, (VkAttachmentLoadOp)k->cload[i], (VkAttachmentStoreOp)k->cstore[i],
                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL};
             cr[i] = (VkAttachmentReference2){VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, NULL, na++, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT};
         }
@@ -354,7 +357,7 @@ static int pass_commit(void) {
         rpkey k; memset(&k, 0, sizeof k); k.ncol = P_ri.colorAttachmentCount; k.samples = S.samples ? S.samples : 1;
         fbkey fk; memset(&fk, 0, sizeof fk); VkImageView views[9]; VkClearValue cv[9]; uint32_t na = 0;
         for (uint32_t i = 0; i < k.ncol; i++) if (P_ca[i].imageView) {
-            k.cfmt[i] = P_att[i].fmt; k.cload[i] = P_ca[i].loadOp; cv[na] = P_ca[i].clearValue; views[na] = P_ca[i].imageView;
+            k.cfmt[i] = P_att[i].fmt; k.cload[i] = P_ca[i].loadOp; k.cstore[i] = P_ca[i].storeOp; cv[na] = P_ca[i].clearValue; views[na] = P_ca[i].imageView;
             fk.a[na].usage = P_att[i].im->usage; fk.a[na].flags = P_att[i].im->cflags; fk.a[na].w = P_att[i].w; fk.a[na].h = P_att[i].h; fk.a[na].layers = P_att[i].layers;
             fk.a[na].fmt = P_att[i].im->fixed_fmt ? (uint32_t)P_att[i].im->fmt : P_att[i].fmt; fk.a[na].fmt2 = (uint32_t)P_att[i].im->fmt2;
             fk.a[na].fmt3 = (uint32_t)P_att[i].im->fmt_cls[0]; fk.a[na].fmt4 = (uint32_t)P_att[i].im->fmt_cls[1]; na++; }   // (a format-listed image (DM_VK_UBWC): its whole list, as imageless framebuffers require)
@@ -406,6 +409,7 @@ static void pass_dump_depth(void);
 static void texdump_flush(void);
 static void pass_dump(void) {
     texdump_flush();
+    if (g_pd_state != 1) return;   // no dump armed: nothing below does anything then, and its three getenv calls at every pass's end were about 1% of the replay thread
     if (g_pd_state == 1 && g_sub_pass - 1 < g_pd_skip) return;   // (a submission with fewer passes dumps nothing, and the next one is tried)
     { const char *pp = getenv("DM_VK_PASSDUMP_PASS"); if (g_pd_state == 1 && pp && *pp) {   // DM_VK_PASSDUMP_PASS=n[,n...] (live): only these pass numbers of each submission,
         int hit = 0; for (const char *q = pp; *q;) { char *e; long v = strtol(q, &e, 10); if (e == q) break; if (v == g_sub_pass - 1) hit = 1; q = *e ? e + 1 : e; }   // to follow a few passes
@@ -583,10 +587,11 @@ void vk_prof_end(void) {
 // the drawing and the pool memory kept what it held before. Super Mario Odyssey's fluid surface (al::FluidSimulateWave: the Cap Kingdom ground fog's wave solver ends in a
 // 128x128 RGBA16F linear target that the fog's vertex shader samples, and a 256x128 R32F one) is such a target. So a pass that drew into one copies each such colour
 // target back to its storage, at its stride, marked as written by the GPU (the pools' copy-back carries it to the CPU). DM_VK_LIN_BACK=0 (live, A/B): not
+static vkimg_t g_s0_image;   // slot 0's scratch target (DM_VK_SLOT0_FILL, below): where P_att[0].im is this, S.rt_col[0] is not the pass's target (the game's earlier one, or an alias's)
 static void lin_back(void) {
     for (int i = 0; i < S.ncol && i < 8; i++) {
         vkimg_t *im = P_att[i].im; const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL; const vkfmt_t *f = t ? vk_fmt(t->d.format) : NULL;
-        if (!im || !t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) || !f || !f->bpb || f->bw > 1 || im->levels != 1 || im->layers != 1 || im->d != 1) continue;
+        if (!im || im == &g_s0_image || !t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) || !f || !f->bpb || f->bw > 1 || im->levels != 1 || im->layers != 1 || im->d != 1) continue;
         size_t stride = t->d.stride ? t->d.stride : (size_t)im->w * f->bpb, len = stride * (im->h - 1) + (size_t)im->w * f->bpb; VkBuffer b; VkDeviceSize o;
         if (stride % f->bpb || stride < (size_t)im->w * f->bpb || !vk_buf_at((uint64_t)(uintptr_t)t->mem, len, &b, &o) || o % f->bpb) continue;
         VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
@@ -640,6 +645,55 @@ void vk_end_pass(void) {
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
 void vk_end_pass_land(void) { vk_end_pass(); if (vk_sub_open()) vk_ubd_land(vk_cmd()); }
 static int pass_whole(VkRect2D r) { return !r.offset.x && !r.offset.y && r.extent.width >= S.pass_w && r.extent.height >= S.pass_h; }
+// An empty colour slot 0 (DM_VK_SLOT0_FILL; opt-in, any GPU). A pass whose colour attachments start past slot 0 (slot 0 a null view, VK_ATTACHMENT_UNUSED in a render
+// pass) hung the GPU of an Adreno 830 and lost the device every frame: a OnePlus Pad 3 (driver 0x8032004a) whose pass bound a target in slot 5 with slots 0-4 empty, which a
+// later pass drew into as slot 0; a scratch target in slot 0 alone fixed it (droidplay-core 87bd41d62, the idea). Not reproduced with nx2android: no such hang is known on
+// the Odin 3 (Adreno 830, Qualcomm's driver 512.800), so it is opt-in. Slot 0 of such a pass gets a scratch RGBA8 image at least the pass's size (one, grown when a pass
+// is larger; the one before goes to vk_defer_free_*, destroyed once the GPU is past the submissions that name it), loaded and stored DONT_CARE, a transient attachment
+// in lazily allocated memory where the device has such a type (on a tiler it never leaves tile memory), and the pipelines write nothing to it (prepare_draw: write
+// mask 0 where P_att[0] is the scratch). Single-sample, single-layer passes only. DM_VK_SLOT0_FILL=1 (start-up): on; off by default
+static VkImageView g_s0_view; static uint64_t g_s0_passes; static int g_s0_failed;
+static int slot0_fill_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("DM_VK_SLOT0_FILL");
+        on = e && *e && atoi(e) != 0;
+        VKLOG("empty colour slot 0: %s (DM_VK_SLOT0_FILL%s; %s)", on ? "a scratch target there in multi-target passes" : "left empty", e && *e ? "" : " default off", V.props.deviceName); }
+    return on;
+}
+// whether a pass of ncol colour slots, slot 0 without a view, gets the scratch there
+static int slot0_fill_wanted(int ncol, int slot0_view, uint32_t samples, uint32_t layers) { return ncol > 1 && !slot0_view && samples == 1 && layers == 1 && slot0_fill_on(); }
+static int slot0_scratch(uint32_t w, uint32_t h) {   // the scratch image, at least w x h; 0: none could be made (the slot stays empty)
+    if (g_s0_view && g_s0_image.w >= w && g_s0_image.h >= h) return 1;
+    if (g_s0_failed) return 0;
+    vkimg_t im = {0}; VkImageView v = VK_NULL_HANDLE;
+    im.w = w > g_s0_image.w ? w : g_s0_image.w; im.h = h > g_s0_image.h ? h : g_s0_image.h;
+    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {im.w, im.h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT,
+                            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL,
+                            VK_IMAGE_LAYOUT_UNDEFINED};   // (transient: only ever an attachment, never loaded or stored)
+    if (vkCreateImage(V.dev, &ci, NULL, &im.img)) goto fail;
+    VkMemoryRequirements mr; vkGetImageMemoryRequirements(V.dev, im.img, &mr);
+    uint32_t mt = vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, 0);   // lazily allocated where there is such a type
+    if (mt == UINT32_MAX) mt = vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);                                 // else device-local, as any target
+    if (mt == UINT32_MAX) goto fail;
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, mt};
+    VkResult r = vkAllocateMemory(V.dev, &ai, NULL, &im.mem);
+    if (r || vkBindImageMemory(V.dev, im.img, im.mem, 0)) goto fail;
+    VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, im.img, VK_IMAGE_VIEW_TYPE_2D, ci.format, {0, 0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (vkCreateImageView(V.dev, &vi, NULL, &v)) goto fail;
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(vk_cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    im.fmt = ci.format; im.usage = ci.usage; im.aspect = VK_IMAGE_ASPECT_COLOR_BIT; im.d = im.layers = im.levels = im.samples = 1; im.vtype = VK_IMAGE_VIEW_TYPE_2D; im.layout = VK_IMAGE_LAYOUT_GENERAL;
+    VKLOG("empty colour slot 0: scratch target %ux%u%s (DM_VK_SLOT0_FILL)", im.w, im.h, V.mem.memoryTypes[mt].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? ", lazily allocated" : "");
+    if (g_s0_view) { vk_defer_free_view(g_s0_view); vk_defer_free_image(g_s0_image.img, g_s0_image.mem); }   // the smaller one: once the GPU is past the submissions that name it
+    g_s0_image = im; g_s0_view = v; return 1;
+fail:
+    VKLOG("[RED] empty colour slot 0: no scratch target %ux%u could be made: such passes keep it empty from here", im.w, im.h); g_s0_failed = 1;
+    if (v) vkDestroyImageView(V.dev, v, NULL);
+    if (im.img) vkDestroyImage(V.dev, im.img, NULL);
+    if (im.mem) vkFreeMemory(V.dev, im.mem, NULL);
+    return 0;
+}
 static int begin_pass(void) {
     if (S.pass_open) return 1;
     int psplit = g_psplit_now; g_psplit_now = 0;   // a pass split (prepare_draw): taken before any early return, so the flag never forces a later pass's cut
@@ -706,6 +760,12 @@ static int begin_pass(void) {
         S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
         static int said; if (!said++) VKLOG("draw with no render target: attachment-less pass %ux%u", w, h);
     }
+    if (have && slot0_fill_wanted(ncol, ca[0].imageView != VK_NULL_HANDLE, samples, layers) && slot0_scratch(w, h)) {   // an empty slot 0 gets the scratch (DM_VK_SLOT0_FILL, opt-in; above)
+        ca[0] = (VkRenderingAttachmentInfo){VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, g_s0_view, VK_IMAGE_LAYOUT_GENERAL, 0, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED,
+                                            VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE};
+        S.cfmt[0] = VK_FORMAT_R8G8B8A8_UNORM; P_att[0].im = &g_s0_image; P_att[0].fmt = VK_FORMAT_R8G8B8A8_UNORM; P_att[0].layers = 1; P_att[0].w = g_s0_image.w; P_att[0].h = g_s0_image.h;
+        if (g_s0_passes++ < 4) VKLOG("empty colour slot 0: scratch target for a %ux%u pass with %d colour slots (DM_VK_SLOT0_FILL; %llu so far)", w, h, ncol, (unsigned long long)g_s0_passes);
+    }
     // The cut (DM_VK_CB_DRAWS): only before a pass whose depth attachment no earlier pass of this submission drew with. Adreno keeps a low-resolution copy of a depth
     // attachment (LRZ) that it trusts within a command buffer; a pass that goes on with a depth buffer begun in an earlier command buffer had whole 8x8 blocks of its
     // nearest objects rejected in some frames (NEO: bushes, trees and the phone booth near the camera flickered light blue). DM_VK_X_CUTANY=1 cuts before any pass.
@@ -725,7 +785,7 @@ static int begin_pass(void) {
     }
     if (dim) { cut_touch = (g_lrz_touch & (LRZ_CUT | LRZ_CUT_RD)) && dim->depth_sub == g_set_epoch && dim->depth_cut != g_cuts; dim->depth_sub = g_set_epoch; dim->depth_cut = g_cuts; }
     { static int n; uint32_t cs[9] = {0}; int any = 0, mis = 0; uint32_t s0 = 0;   // multisampled passes: every attachment's sample count (they must agree)
-      for (int i = 0; i < ncol; i++) if (ca[i].imageView) { vkimg_t *im2; vk_tex_view(&S.rt_col[i], S.rt_has_cview[i] ? &S.rt_cview[i] : NULL, 0xff, 0, 1, &im2); cs[i] = im2 ? im2->samples : 0; if (cs[i] > 1) any = 1; if (!s0) s0 = cs[i]; else if (cs[i] != s0) mis = 1; }
+      for (int i = 0; i < ncol; i++) if (ca[i].imageView && P_att[i].im != &g_s0_image) { vkimg_t *im2; vk_tex_view(&S.rt_col[i], S.rt_has_cview[i] ? &S.rt_cview[i] : NULL, 0xff, 0, 1, &im2); cs[i] = im2 ? im2->samples : 0; if (cs[i] > 1) any = 1; if (!s0) s0 = cs[i]; else if (cs[i] != s0) mis = 1; }
       if (da.imageView) { vkimg_t *im2; vk_tex_view(&S.rt_dep, S.rt_has_dview ? &S.rt_dview : NULL, 0xff, 0, 1, &im2); cs[8] = im2 ? im2->samples : 0; if (cs[8] > 1) any = 1; if (s0 && cs[8] != s0) mis = 1; }
       if ((any || mis) && n < 10) { n++; VKLOG("pass %ux%u samples: colour %u %u %u %u, depth %u%s", w, h, cs[0], cs[1], cs[2], cs[3], cs[8], mis ? " MISMATCH" : ""); } }
     if (!g_x_nobar) vk_img_barrier_all(cb);
@@ -809,7 +869,7 @@ static void clear_color(const p_clear_color *c) {
     if (!begin_pass()) return;
     if (c->index < 0 || c->index >= S.ncol) return;
     p_clear_color mapped=*c;mapped.index=P_alias[c->index];c=&mapped;
-    if (S.cfmt[c->index] == VK_FORMAT_UNDEFINED || !c->mask) return;
+    if (S.cfmt[c->index] == VK_FORMAT_UNDEFINED || P_att[c->index].im == &g_s0_image || !c->mask) return;   // (slot 0's scratch is the game's empty slot: nothing to clear)
     if ((c->mask & 0xf) != 0xf) { VkRect2D r = scissor_rect(); if (!r.extent.width || !r.extent.height) return;
         if (clear_masked(c, r)) return;
         VKRED_ONCE(31, "partial channel clear mask %#x cleared in full", c->mask); }
@@ -1893,6 +1953,7 @@ static int prepare_draw(int prim, int indexed) {
             k.bl[i].src = S.blend[i].src_rgb; k.bl[i].dst = S.blend[i].dst_rgb; k.bl[i].srca = S.blend[i].src_a; k.bl[i].dsta = S.blend[i].dst_a; k.bl[i].eq = S.blend[i].eq_rgb; k.bl[i].eqa = S.blend[i].eq_a;
         }
     }
+    if (S.ncol > 1 && P_att[0].im == &g_s0_image) { k.wmask[0] = 0; k.blend_en &= ~1u; }   // slot 0's scratch (DM_VK_SLOT0_FILL): nothing written there
     // Dual-source blending: NVN blends colour target 0 with the shader's output 1 as its second source (factors SRC1_*, 0x10-0x13), the translator declares that output at
     // location 1, and Vulkan takes the second source only from location 0, index 1 (with location 1 the blend reads undefined values: Pokémon Legends: Arceus's post effects,
     // shader ha_post_effects variation 4, washed the whole picture out; the validation layer named it). Such a pipeline takes the fragment shader's dual-source variant
@@ -2507,10 +2568,34 @@ static int depth_scale(VkCommandBuffer cb, vkimg_t *s, vkimg_t *d, VkImageSubres
     return 1;
 }
 enum { CF_MIRROR_X = 4, CF_MIRROR_Y = 8 };   // NVNcopyFlags (copy_t2t)
+// Transfer commands interpret image formats, not views. Family images are UNORM,
+// so an sRGB resolve/blit needs a temporary image in the texture's logical format.
+// Copying bytes into/out of it preserves encoding; retire it with this submission.
+static VkImage transfer_image(VkCommandBuffer cb, VkFormat fmt, uint32_t w, uint32_t h) {
+    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, fmt, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImage im; VkResult r = vkCreateImage(V.dev, &ci, NULL, &im);
+    if (r == VK_ERROR_DEVICE_LOST) VKCHK(r);
+    if (r) { VKRED_ONCE(108, "transfer image creation failed (%d): %ux%u format %d, copy skipped", r, w, h, fmt); return VK_NULL_HANDLE; }
+    VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, im, &rq);
+    VkDeviceSize off; void *sub;
+    VkDeviceMemory mem = vk_image_memory(&rq, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT), &off, &sub);
+    if (!mem) { VKRED_ONCE(109, "transfer image allocation failed (%llu bytes): copy skipped", (unsigned long long)rq.size); vkDestroyImage(V.dev, im, NULL); return VK_NULL_HANDLE; }
+    r = vkBindImageMemory(V.dev, im, mem, off);
+    if (sub) vk_defer_free_image_sub(im, sub); else vk_defer_free_image(im, mem);
+    if (r == VK_ERROR_DEVICE_LOST) VKCHK(r);
+    if (r) { VKRED_ONCE(110, "transfer image memory binding failed (%d): copy skipped", r); return VK_NULL_HANDLE; }
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    return im;
+}
 static void copy_t2t(const p_copy_t2t *c) {
     vk_end_pass();
     vkimg_t *s = vk_tex(c->src), *d = vk_tex(c->dst);
     if (!s || !d) return;
+    const vkfmt_t *sf = vk_fmt(c->src->d.format), *df = vk_fmt(c->dst->d.format);
+    if (!sf || !df) return;
     vk_watch(s, "copy source"); vk_watch(d, "copy destination");
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, s); vk_tex_prepare(cb, d); vk_img_barrier_all(cb);
     VkImageSubresourceLayers ss = sub_of(s, &c->sv, c->has_sv, c->sr.zoffset), ds = sub_of(d, &c->dv, c->has_dv, c->dr.zoffset);
@@ -2534,28 +2619,55 @@ static void copy_t2t(const p_copy_t2t *c) {
     if (k.dr.xoffset + k.dr.width > dw) { VKRED_ONCE(74, "texture copy destination region clipped to its image"); k.dr.width = dw - k.dr.xoffset; if (same) k.sr.width = k.dr.width; }
     if (k.dr.yoffset + k.dr.height > dh) { VKRED_ONCE(74, "texture copy destination region clipped to its image"); k.dr.height = dh - k.dr.yoffset; if (same) k.sr.height = k.dr.height; }
     if (k.sr.width <= 0 || k.sr.height <= 0 || k.dr.width <= 0 || k.dr.height <= 0) { vk_img_barrier_all(cb); return; }
-    if (!(c->flags & DM_COPY_RESOLVE) && (mir || !(k.sr.width == k.dr.width && k.sr.height == k.dr.height && s->fmt == d->fmt))) {   // a blit: both formats must allow it (and linear filtering)
-        VkFormatProperties sp, dp; vkGetPhysicalDeviceFormatProperties(V.pd, s->fmt, &sp); vkGetPhysicalDeviceFormatProperties(V.pd, d->fmt, &dp);
+    if (!(c->flags & DM_COPY_RESOLVE) && (mir || !(k.sr.width == k.dr.width && k.sr.height == k.dr.height && sf->vk == df->vk))) {   // a blit: both formats must allow it (and linear filtering)
+        VkFormatProperties sp, dp; vkGetPhysicalDeviceFormatProperties(V.pd, sf->vk, &sp); vkGetPhysicalDeviceFormatProperties(V.pd, df->vk, &dp);
         if (!(sp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(dp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) || (s->aspect != d->aspect)) {
             if (depth_scale(cb, s, d, ss, ds, &k)) return;
             VKRED_ONCE(75, "texture blit between formats %d → %d that cannot be blitted (%dx%d → %dx%d, present %llu): skipped", s->fmt, d->fmt, k.sr.width, k.sr.height, k.dr.width, k.dr.height, (unsigned long long)g_tex_frame); vk_img_barrier_all(cb); return; }
         if (!(sp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) || (s->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) k.flags &= ~1u;   // nearest where linear is not allowed
     }
-    if (!mir && s == d && !memcmp(&ss, &ds, sizeof ss) && k.sr.xoffset == k.dr.xoffset && k.sr.yoffset == k.dr.yoffset && k.sr.width == k.dr.width && k.sr.height == k.dr.height && k.sr.zoffset == k.dr.zoffset) {
+    if (!mir && s == d && sf->vk == df->vk && !memcmp(&ss, &ds, sizeof ss) && k.sr.xoffset == k.dr.xoffset && k.sr.yoffset == k.dr.yoffset && k.sr.width == k.dr.width && k.sr.height == k.dr.height && k.sr.zoffset == k.dr.zoffset) {
         vk_img_barrier_all(cb); return; }   // a copy of a region onto itself (two textures over the same storage): nothing to do, and Vulkan forbids overlapping copies
     if (c->flags & DM_COPY_RESOLVE) {
         VkImageResolve r = {ss, {c->sr.xoffset, c->sr.yoffset, 0}, ds, {c->dr.xoffset, c->dr.yoffset, 0}, {(uint32_t)c->sr.width, (uint32_t)c->sr.height, 1}};
-        vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
-    } else if (!mir && c->sr.width == c->dr.width && c->sr.height == c->dr.height && s->fmt == d->fmt) {
+        if (s->fmt == d->fmt) vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        else {   // MSAA sRGB is not a family image; its single-sample target can be UNORM.
+            if (s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT || s->samples <= 1 || d->samples != 1 ||
+                sf->vk != s->fmt || sf->vk != df->vk ||
+                !((s->fmt == VK_FORMAT_R8G8B8A8_SRGB && d->fmt == VK_FORMAT_R8G8B8A8_UNORM) ||
+                  (s->fmt == VK_FORMAT_B8G8R8A8_SRGB && d->fmt == VK_FORMAT_B8G8R8A8_UNORM))) {
+                VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
+                vk_img_barrier_all(cb); return;
+            }
+            VkImage tmp = transfer_image(cb, s->fmt, r.extent.width, r.extent.height); if (!tmp) return;
+            VkImageCopy cp = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, ds, r.dstOffset, r.extent};
+            r.dstSubresource = cp.srcSubresource; r.dstOffset = cp.srcOffset;
+            vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &r); vk_img_barrier_all(cb);
+            vkCmdCopyImage(cb, tmp, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
+        }
+    } else if (!mir && c->sr.width == c->dr.width && c->sr.height == c->dr.height && sf->vk == df->vk) {
         VkImageCopy r = {ss, {c->sr.xoffset, c->sr.yoffset, s->layers > 1 ? 0 : c->sr.zoffset}, ds, {c->dr.xoffset, c->dr.yoffset, d->layers > 1 ? 0 : c->dr.zoffset},
                          {(uint32_t)c->sr.width, (uint32_t)(c->sr.height ? c->sr.height : 1), s->layers > 1 ? 1 : (uint32_t)(c->sr.depth ? c->sr.depth : 1)}};
         vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
     } else {
         VkImageBlit r = {ss, {{c->sr.xoffset, c->sr.yoffset, 0}, {c->sr.xoffset + c->sr.width, c->sr.yoffset + (c->sr.height ? c->sr.height : 1), 1}},
                          ds, {{c->dr.xoffset, c->dr.yoffset, 0}, {c->dr.xoffset + c->dr.width, c->dr.yoffset + (c->dr.height ? c->dr.height : 1), 1}}};
+        VkImage si = s->img, di = d->img;
+        VkImageCopy back = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, ds, r.dstOffsets[0], {(uint32_t)c->dr.width, (uint32_t)c->dr.height, 1}};
+        if (s->fmt != sf->vk) {
+            si = transfer_image(cb, sf->vk, (uint32_t)c->sr.width, (uint32_t)c->sr.height); if (!si) return;
+            VkImageCopy cp = {ss, r.srcOffsets[0], {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {(uint32_t)c->sr.width, (uint32_t)c->sr.height, 1}};
+            vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, si, VK_IMAGE_LAYOUT_GENERAL, 1, &cp); vk_img_barrier_all(cb);
+            r.srcSubresource = cp.dstSubresource; r.srcOffsets[0] = cp.dstOffset; r.srcOffsets[1] = (VkOffset3D){c->sr.width, c->sr.height, 1};
+        }
+        if (d->fmt != df->vk) {
+            di = transfer_image(cb, df->vk, (uint32_t)c->dr.width, (uint32_t)c->dr.height); if (!di) return;
+            r.dstSubresource = back.srcSubresource; r.dstOffsets[0] = back.srcOffset; r.dstOffsets[1] = (VkOffset3D){c->dr.width, c->dr.height, 1};
+        }
         if (mir & CF_MIRROR_X) { int32_t x = r.dstOffsets[0].x; r.dstOffsets[0].x = r.dstOffsets[1].x; r.dstOffsets[1].x = x; }
         if (mir & CF_MIRROR_Y) { int32_t y = r.dstOffsets[0].y; r.dstOffsets[0].y = r.dstOffsets[1].y; r.dstOffsets[1].y = y; }
-        vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r, (c->flags & 1) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+        vkCmdBlitImage(cb, si, VK_IMAGE_LAYOUT_GENERAL, di, VK_IMAGE_LAYOUT_GENERAL, 1, &r, (c->flags & 1) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+        if (di != d->img) { vk_img_barrier_all(cb); vkCmdCopyImage(cb, di, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &back); }
     }
     vk_img_barrier_all(cb);
 }
@@ -2566,7 +2678,16 @@ static void clear_tex(const p_clear_tex *c) {
     VkImageSubresourceLayers l = sub_of(im, &c->view, c->has_view, c->r.zoffset);
     VkImageSubresourceRange rg = {l.aspectMask, l.mipLevel, 1, l.baseArrayLayer, im->layers > 1 ? (uint32_t)(c->r.depth ? c->r.depth : 1) : 1};
     if (c->r.xoffset || c->r.yoffset || (uint32_t)c->r.width < (im->w >> l.mipLevel) || (uint32_t)c->r.height < (im->h >> l.mipLevel)) VKRED_ONCE(71, "partial texture clear: the whole level is cleared");
-    if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) { VkClearColorValue v; memcpy(&v, c->c.u, 16); vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg); }
+    if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
+        VkClearColorValue v; memcpy(&v, c->c.u, 16);
+        const vkfmt_t *f = vk_fmt(c->has_view && c->view.set_format ? c->view.format : c->tex->d.format);
+        if (f && ((f->vk == VK_FORMAT_R8G8B8A8_SRGB && im->fmt == VK_FORMAT_R8G8B8A8_UNORM) ||
+                  (f->vk == VK_FORMAT_B8G8R8A8_SRGB && im->fmt == VK_FORMAT_B8G8R8A8_UNORM))) {
+            // ClearColorImage encodes only an sRGB image; family backing is UNORM.
+            for (int i = 0; i < 3; i++) { float x = fminf(fmaxf(v.float32[i], 0.0f), 1.0f); v.float32[i] = x <= 0.0031308f ? 12.92f * x : 1.055f * powf(x, 1.0f / 2.4f) - 0.055f; }
+        }
+        vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg);
+    }
     else { VkClearDepthStencilValue v = {c->c.f[0], c->c.u[1]}; rg.aspectMask = im->aspect; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg); }
     vk_img_barrier_all(cb);
 }

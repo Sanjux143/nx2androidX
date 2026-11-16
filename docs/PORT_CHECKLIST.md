@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**58 / 110 ported**
+**58 / 111 ported**
 
 **Credit.** A ported game names the person who brought it up (`ported by @handle`), taken from the commit that added its profile. The ports from before this was written down are credited to the author of the commit that introduced them.
 
@@ -62,7 +62,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000` · ported by @shirai91
 - [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000`
-- [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000` · work in progress: tested to Battle Network 4's opening
+- [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000`
 - [x] Metroid Dread · `010093801237C000` · ported by @shirai91
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
@@ -84,8 +84,8 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Pokémon Legends: Z-A · `0100F43008C44000` · ported by @shirai91
 - [x] Pokémon Mystery Dungeon Rescue Team DX · `01003D200BAA2000`
 - [x] Pokémon Scarlet · `0100A3D008C5C000`
-- [x] Pokémon Shield · `01008DB008C2C000`
-- [x] Pokémon Sword · `0100ABF008968000`
+- [x] Pokémon Shield · `01008DB008C2C000` · ported by @rospec14
+- [x] Pokémon Sword · `0100ABF008968000` · ported by @rospec14
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
 - [x] Rhythm Heaven Groove · `0100D9F01D474000`
@@ -111,7 +111,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000` · ported by @shirai91
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
-- [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · AYN Odin 2 / Turnip; tested through the tutorials and battles
+- [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · AYN Odin 2 / Turnip; tested through the tutorials and battles · ported by @rospec14
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000` · ported by @shirai91
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000` · ported by @shirai91
 - [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet · ported by @shirai91
@@ -119,5 +119,5 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000` · ported by @shirai91
 - [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile
 - [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet · ported by @shirai91
-- [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), saving and later maps not tested yet
+- [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), tested to Colony 9 with the pause menu and saving, later maps not tested yet · ported by @rospec14
 - [ ] Yoshi's Crafted World · `01006000040C2000` · upstream profile

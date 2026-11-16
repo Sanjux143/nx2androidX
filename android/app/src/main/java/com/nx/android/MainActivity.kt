@@ -221,6 +221,9 @@ class MainActivity : ComponentActivity() {
             envCheck.refresh()   // the chip's colour follows it at once
             toast(locale.str(R.string.fw_cleared))
         },
+        // 文件管理器能不能看见 App 的私有目录（运行时、存档、日志）。文档提供器自己读这份设置。
+        fileProvider = { prefs.bool(PrefsStore.FILE_PROVIDER, true) },
+        onSetFileProvider = { on -> prefs.put(PrefsStore.FILE_PROVIDER, on) },
         onShareLog = {
             lifecycleScope.launch {
                 val zip = withContext(Dispatchers.IO) {

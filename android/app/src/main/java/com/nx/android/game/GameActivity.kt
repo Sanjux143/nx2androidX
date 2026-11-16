@@ -14,6 +14,7 @@ import android.annotation.SuppressLint
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -155,6 +156,12 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     /** 布局编辑器开着吗（App 自己的面板：游戏等着，触摸归编辑器） */
     private var editorOpen by mutableStateOf(false)
 
+    // ---- 外接屏：游戏到大屏上，手机当手柄 ----
+    private var externalDisplay: ExternalDisplay? = null
+    private var externalOn by mutableStateOf(false)          // 玩家开了这个模式吗
+    private var externalSupported by mutableStateOf(false)   // 这个包的运行库能接第二个窗口吗
+    private lateinit var screenBlank: View                  // 外接屏接管时盖住手机上的旧画面
+
     // ---- 物理手柄：App 监听系统的输入设备，告诉宿主有几个在用（宿主不再自己轮询设备列表）----
     private val inputManager: InputManager get() = getSystemService(InputManager::class.java)
     private val ctrlDevices = mutableSetOf<Int>()   // 真正发过输入的手柄（发过才算在用）
@@ -253,6 +260,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         val surface = SurfaceView(this)
         surface.holder.addCallback(this)
         frame.addView(surface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // 外接屏接管时盖住手机上的那块画面（宿主不再往它画，留在那里的是旧的一帧）
+        screenBlank = View(this).apply { setBackgroundColor(android.graphics.Color.BLACK); visibility = View.GONE }
+        frame.addView(screenBlank, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         // 虚拟手柄绘制层（android-virtual-pad）：画在游戏画面之上、抽屉之下；不消费触点——命中与分流在宿主
         packPath = intent.getStringExtra(EXTRA_PACK)
         val titleId = intent.getStringExtra(EXTRA_TITLE_ID)?.ifEmpty { null }
@@ -268,7 +278,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         frame.addView(compose, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         setContentView(frame)
         immersive()
-        if (hostRunning) return   // a recreation (the system rebuilt the activity): the running game takes the new window in surfaceCreated
+        if (hostRunning) { setupExternalDisplay(); return }   // a recreation (the system rebuilt the activity): the running game takes the new window in surfaceCreated
         if (intent.getBooleanExtra(EXTRA_EXIT, false)) return endProcess()
         val pack = intent.getStringExtra(EXTRA_PACK)
         val host = intent.getStringExtra(EXTRA_HOST)
@@ -315,6 +325,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         runCatching { Native.padPrefs(padView.shown, padView.opacity) }
         // 手柄的映射表：每只手柄的档案推给宿主（老包没有那个入口，推不动就算了）
         pushPadMapping()
+        // 外接屏：宿主能接第二个窗口吗（老包没有那个能力位，这个模式对它没有意义）
+        setupExternalDisplay()
         // 玩家选的帧率档位：start 之后才下发——包的 env.txt 在宿主启动时读过，晚 setenv 的那份留下来，
         // 玩家的选择盖过档案自己的 DM_FPS_PIN。没选过就不下发，档案的默认继续说话。
         rateSettings?.load()?.let { pin -> runCatching { Native.perfPinSet(pin.fps) } }
@@ -322,6 +334,59 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    // ---- 外接屏：游戏到大屏上，手机当手柄 ----
+
+    /**
+     * 外接屏的承载：这个宿主能不能接第二个窗口，开关与那块屏的 presentation。
+     * 宿主启动之后才问得出能力位（老运行时没有那个入口）；页面被重建时也走这里，
+     * 外接屏的模式跟着新页面继续（上一个页面收掉时游戏先回到手机，新页面再把它送上去）。
+     */
+    private fun setupExternalDisplay() {
+        if (externalDisplay != null) return
+        externalSupported = runCatching { Native.frontCaps() }.getOrDefault(0) and Native.FRONT_CAPS_EXTERNAL != 0
+        externalDisplay = ExternalDisplay(this, object : ExternalDisplay.Listener {
+            override fun surfaceChanged(surface: Surface, width: Int, height: Int) {
+                runCatching { Native.externalSurface(surface) }   // 游戏画到那块屏上
+                setScreenBlank(true)                            // 手机上的旧画面盖住
+            }
+            override fun surfaceLost() {
+                runCatching { Native.externalSurface(null) }      // 屏没了：游戏回到手机
+                setScreenBlank(false)
+            }
+        })
+        // 玩家开过这个模式吗（App 的偏好是唯一真值）
+        externalOn = PrefsStore(this).bool(PrefsStore.EXTERNAL_DISPLAY, false)
+        if (externalOn && externalSupported) startExternal()
+    }
+
+    /** 开始找外接屏：找到了就把它的画面交给宿主（游戏就到大屏上去了，手机剩下手柄） */
+    private fun startExternal() {
+        externalDisplay?.start()
+    }
+
+    /** 不找外接屏了：宿主把游戏放回手机自己的画面 */
+    private fun stopExternal() {
+        externalDisplay?.stop()
+    }
+
+    /** 外接屏现在接上了吗（问系统，实时：插上拔下都要看得见） */
+    private fun externalScreenAttached(): Boolean = externalDisplay?.available() == true
+
+    /**
+     * 外接屏接管了游戏：手机上那块画面是旧的（宿主不再往它画），盖住它——
+     * 手机上只剩手柄，玩家不会以为游戏还在手机上。
+     */
+    private fun setScreenBlank(on: Boolean) {
+        if (::screenBlank.isInitialized) screenBlank.visibility = if (on) View.VISIBLE else View.GONE
+    }
+
+    /** 抽屉的开关：外接屏模式（即时生效：插上屏就切过去，拔掉就切回来） */
+    private fun setExternal(on: Boolean) {
+        externalOn = on
+        PrefsStore(this).put(PrefsStore.EXTERNAL_DISPLAY, on)
+        if (on) startExternal() else stopExternal()
+    }
 
     /**
      * The default driver: the app's built-in one (the driver it ships), written into the pack when the player
@@ -469,6 +534,11 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 },
                 onLayoutEditor = { openEditor() },
                 onResetPadLayout = { resetPadLayout() },
+                // 外接屏：游戏到大屏上，手机当手柄
+                externalSupported = { externalSupported },
+                externalOn = { externalOn },
+                externalAvailable = { externalScreenAttached() },
+                onExternal = { setExternal(it) },
                 // 暂停/继续：游戏原地停/起，抽屉不收——玩家可以一边停着一边调设置
                 onPauseGame = {
                     paused = true
@@ -585,6 +655,32 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
             padController.reload()
             pushPadMapping()
         }
+        pushGameMode()
+    }
+
+    /**
+     * Android 的游戏模式：系统给的档位（性能 / 标准）推给宿主，宿主据此换节奏策略
+     * （性能档里游戏自己的周期说话）。每次 resume 都问一遍 —— 玩家在游戏页时可以在系统里改模式
+     * （上游的 #294：游戏在后台时模式可能变）。
+     */
+    private fun pushGameMode() {
+        val mode = GameMode.forward(systemGameMode(), packGraphics())
+        runCatching { Native.perfGameMode(mode) }
+    }
+
+    /** 系统现在给的档位（2 = 性能，1 = 标准，-1 = 不支持；没有那个服务就是 0） */
+    private fun systemGameMode(): Int {
+        if (Build.VERSION.SDK_INT < 31) return 0   // GameManager is Android 12 and later
+        val gm = getSystemService(android.app.GameManager::class.java) ?: return 0
+        return runCatching { gm.gameMode }.getOrDefault(0)
+    }
+
+    /** 这个游戏的图形接口（包的清单里的 graphics）：宿主自己画的那些才归宿主的节奏策略管 */
+    private fun packGraphics(): String {
+        val pack = packPath ?: return ""
+        return runCatching {
+            com.nx.android.data.library.LibraryFileScanner.portFromPack(java.io.File(pack))?.graphics ?: ""
+        }.getOrDefault("")
     }
 
     /** The phone's language changed (configChanges holds it): the app's words are read again */
@@ -602,6 +698,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     override fun onDestroy() {
         ctrlListener?.let { runCatching { inputManager.unregisterInputDeviceListener(it) } }
         ctrlListener = null
+        externalDisplay?.stop()   // 外接屏：把它收起来，宿主那边也放回手机
         super.onDestroy()
     }
 

@@ -2,6 +2,13 @@ package com.nx.android.game.overlay
 
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -11,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,7 +37,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Layers
@@ -57,15 +68,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -89,10 +106,13 @@ import com.nx.android.core.ui.theme.NxPalette
 import kotlinx.coroutines.delay
 
 /** 抽屉的标签页（存档的导出与导入在库页的抽屉里，这里不再有） */
-enum class DrawerTab(@StringRes val label: Int) {
-    PERF(R.string.drawer_tab_perf), HUD(R.string.drawer_tab_hud),
-    FRAMEGEN(R.string.drawer_tab_framegen), CONTROLS(R.string.drawer_tab_controls),
-    AUDIO(R.string.drawer_tab_audio), PLAYERS(R.string.drawer_tab_players)
+enum class DrawerTab(@StringRes val label: Int, val icon: ImageVector) {
+    PERF(R.string.drawer_tab_perf, Icons.Filled.Speed),
+    HUD(R.string.drawer_tab_hud, Icons.Filled.QueryStats),
+    FRAMEGEN(R.string.drawer_tab_framegen, Icons.Filled.Bolt),
+    CONTROLS(R.string.drawer_tab_controls, Icons.Filled.SportsEsports),
+    AUDIO(R.string.drawer_tab_audio, Icons.AutoMirrored.Filled.VolumeUp),
+    PLAYERS(R.string.drawer_tab_players, Icons.Filled.Groups),
 }
 
 /**
@@ -138,6 +158,10 @@ fun GameDrawer(
     onPlayers: (PadAssignment) -> Unit,
     onLayoutEditor: () -> Unit,
     onResetPadLayout: () -> Unit,
+    externalSupported: () -> Boolean,
+    externalOn: () -> Boolean,
+    externalAvailable: () -> Boolean,
+    onExternal: (Boolean) -> Unit,
     onPauseGame: () -> Unit,
     onResumeGame: () -> Unit,
     onExit: () -> Unit,
@@ -169,6 +193,8 @@ fun GameDrawer(
                 var audioDevices by remember { mutableStateOf(emptyList<AudioOutput>()) }
                 // 手柄：插上拔下要看得见（玩家页指着它们指派）
                 var pads by remember { mutableStateOf(emptyList<GamepadScan.Info>()) }
+                // 外接屏：插上拔下也要看得见（开着这个模式却没有屏，要告诉玩家）
+                var extAvailable by remember { mutableStateOf(externalAvailable()) }
                 var tick by remember { mutableIntStateOf(0) }
                 LaunchedEffect(open) {   // 打开期间 2 Hz 轮询宿主的状态串与帧率档位
                     while (open) {
@@ -181,34 +207,26 @@ fun GameDrawer(
                         if (audioSupported && tick % 4 == 0) runCatching { audioDevices = audioOutputDevices(context) }
                         // 手柄列表：每次都读（插上手柄要立刻看得见）
                         runCatching { pads = pads() }
+                        // 外接屏：每次都读（插上显示器要立刻看得见）
+                        if (externalSupported()) runCatching { extAvailable = externalAvailable() }
                         tick++
                         delay(500)
                     }
                 }
                 Column(
-                    Modifier.align(Alignment.CenterStart).width(420.dp).fillMaxHeight().padding(vertical = 16.dp)
+                    // 抽屉是全屏高的：面板从屏幕顶边到下边，左边贴着屏幕边（直角），右边留圆角
+                    Modifier.align(Alignment.CenterStart).width(420.dp).fillMaxHeight()
                         // 面板自己消费点击：点在行与行之间（或纯文本上）不至于冒泡到遮罩把抽屉关掉
                         .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
                 ) {
-                    GlassSheet(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
+                    GlassSheet(
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+                        shape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp),
+                    ) {
                         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
                             var tab by remember { mutableIntStateOf(0) }
-                            // 六个页签放不下就横着滚（标签挤成两行最难看）
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            ) {
-                                for ((i, t) in DrawerTab.entries.withIndex()) {
-                                    val selected = tab == i
-                                    Box(
-                                        Modifier.clip(RoundedCornerShape(50))
-                                            .background(if (selected) NxPalette.Cream else Color.White.copy(alpha = 0.16f))
-                                            .clickable { tab = i }.padding(horizontal = 14.dp, vertical = 6.dp)
-                                    ) { Text(stringResource(t.label), fontSize = 13.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (selected) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant) }
-                                }
-                            }
+                            // 顶部的页签行：图标在上、文字在下，选中项下面一条滑动的短杠
+                            DrawerTabBar(tab) { tab = it }
                             Spacer(Modifier.height(10.dp))
                             // 内容页：滚动，占据动作行之上的全部空间（动作行在本列底部，不可能被挤出）
                             Column(
@@ -231,6 +249,10 @@ fun GameDrawer(
                                             // 即时反馈：开关的显示别等下一轮轮询（宿主的 env 已经改了）
                                             motionState = (if (on) 1 else 0) or (if (raw) 2 else 0)
                                         },
+                                        externalSupported = { externalSupported() },
+                                        externalOn = { externalOn() },
+                                        externalAvailable = { extAvailable },
+                                        onExternal = onExternal,
                                         )
                                     // 音频页：声音走哪个设备（宿主换了流，即时出声）
                                     DrawerTab.AUDIO -> AudioRows(audioSupported, audioId, audioDevices,
@@ -259,6 +281,89 @@ fun GameDrawer(
                 }
             }
         }
+    }
+}
+
+/**
+ * 抽屉顶部的页签行：图标在上、文字在下，选中的页签下面有一条滑动的短杠。
+ *
+ * 瓦片透明底、按下去弹性缩一点，短杠（2dp 的圆角胶囊）用动画滑到选中瓦片的下面。
+ * 页签一行放不下就横着滚——短杠画在滚动内容里，跟着一起滚，不用另外算偏移。
+ */
+@Composable
+private fun DrawerTabBar(selected: Int, onSelect: (Int) -> Unit) {
+    val density = LocalDensity.current
+    // 每个瓦片在滚动行里的位置与宽度：短杠照着选中瓦片走
+    val bounds = remember { mutableStateMapOf<Int, Rect>() }
+    val selectedBounds = bounds[selected]
+    val indicatorX by animateDpAsState(
+        targetValue = with(density) { selectedBounds?.left?.toDp() ?: 0.dp },
+        animationSpec = tween(240, easing = FastOutSlowInEasing),
+        label = "tabIndicatorX",
+    )
+    val indicatorWidth by animateDpAsState(
+        targetValue = with(density) { selectedBounds?.width?.toDp() ?: 0.dp },
+        animationSpec = tween(240, easing = FastOutSlowInEasing),
+        label = "tabIndicatorWidth",
+    )
+    // 第一次量出位置之前不画短杠（否则它会从 0 滑过来）
+    val indicatorAlpha by animateFloatAsState(
+        targetValue = if (selectedBounds != null) 1f else 0f,
+        animationSpec = tween(160),
+        label = "tabIndicatorAlpha",
+    )
+    Box(Modifier.horizontalScroll(rememberScrollState())) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            for ((i, t) in DrawerTab.entries.withIndex()) {
+                DrawerTabTile(t, selected == i, onClick = { onSelect(i) }, onBounds = { bounds[i] = it })
+            }
+        }
+        // 短杠：贴在页签行下沿
+        Box(
+            Modifier.align(Alignment.BottomStart)
+                .offset(x = indicatorX)
+                .width(indicatorWidth)
+                .height(2.dp)
+                .graphicsLayer { alpha = indicatorAlpha }
+                .clip(RoundedCornerShape(1.dp))
+                .background(NxPalette.Brand),
+        )
+    }
+}
+
+/** 一个页签瓦片：图标在上、文字在下；按下时弹性缩一点 */
+@Composable
+private fun DrawerTabTile(
+    tab: DrawerTab,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onBounds: (Rect) -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.92f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "tabTileScale",
+    )
+    val tint by animateColorAsState(
+        targetValue = if (selected) NxPalette.Brand else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = tween(160),
+        label = "tabTileTint",
+    )
+    Column(
+        Modifier
+            .onGloballyPositioned { onBounds(it.boundsInParent()) }
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(tab.icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.height(2.dp))
+        Text(stringResource(tab.label), fontSize = 11.sp, maxLines = 1,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, color = tint)
     }
 }
 
@@ -473,6 +578,10 @@ private fun ControlRows(
     motion: () -> Int,
     motionHasGyro: Boolean,
     onMotion: (Boolean, Boolean) -> Unit,
+    externalSupported: () -> Boolean,
+    externalOn: () -> Boolean,
+    externalAvailable: () -> Boolean,
+    onExternal: (Boolean) -> Unit,
 ) {
     var shown by remember { mutableStateOf(padShown()) }
     var opacity by remember { mutableStateOf(padOpacity()) }
@@ -512,6 +621,20 @@ private fun ControlRows(
         }
         ToggleRow(Icons.Filled.TouchApp, stringResource(R.string.motion_raw), stringResource(R.string.motion_raw_note), raw) {
             onMotion(on, !raw)
+        }
+    }
+    // 外接屏：游戏到大屏上，手机当手柄。老运行库没有这个能力（宿主接不了第二个窗口），整组不显示
+    if (externalSupported()) {
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        GroupLabel(stringResource(R.string.drawer_group_display))
+        var ext by remember { mutableStateOf(externalOn()) }
+        // 没接上显示器时说清楚：开关开着也没有屏可去
+        val hint = if (externalAvailable()) stringResource(R.string.drawer_external_hint)
+                   else stringResource(R.string.drawer_external_no_display)
+        ToggleRow(Icons.Filled.Cast, stringResource(R.string.drawer_external_display), hint, ext) {
+            ext = !ext
+            onExternal(ext)
         }
     }
 }

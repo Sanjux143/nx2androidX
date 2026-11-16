@@ -23,7 +23,8 @@ The base changes only when the line picks up a new upstream base; an alpha never
 - **The tests**: `python -m unittest discover tests` (the tree's suite) and `cd android && ./gradlew :app:testDebugUnitTest` (the app's). CI runs both as well.
 - **The changelog**: `CHANGELOG.md` at the repository root, one section per release, newest first. English, plain sentences ("Before you update" first, then New / Fixed / Community ports). Write for a player: what they will see, not what a commit did.
 - **The release notes**: the text of the release itself, and **the app shows it in the update popup** — so it is read by players. **Bilingual: English first, Chinese after.**
-- **The community credits**: a `Community ports` section naming the pull requests merged since the last release. Take the list with `python3 devtools/release_contributors.py --since=<the previous release's tag>` and paste it. The script's default baseline is the newest tag, so run it **before** the new tag is pushed (or pass `--since`).
+- **The community credits**: a `Community ports` section naming the pull requests merged since the last release. Take the list with `python3 devtools/release_contributors.py --since=<the previous release's tag>` and paste it. The script's default baseline is the newest tag, so run it **before** the new tag is pushed (or pass `--since`). Two things it does not see, and the notes need by hand: the pull requests of **this** repository that were merged **upstream** and came back with the upstream sync (read the upstream merge commits' "Merge pull request #N from \<handle\>" lines — `git log <last tag>..HEAD --format=%B | grep "Merge pull request"`), and the games' own authors (`git log --format="%an" -- <the profile>`). Write the handle the pull request was opened with.
+- The script takes `--since=<tag>` (with the equals sign) and it lists this repository's pull requests only.
 - **The device**: a change to a port, the host or the app needs the device (AGENTS.md §4). A release checks only the games it adds or fixes.
 
 ## The steps
@@ -96,6 +97,15 @@ gh release list --repo zFitness/nx2androidX --limit 6          # the "Latest" ro
 curl -sI https://github.com/zFitness/nx2androidX/releases/latest | grep -i location
 ```
 
+**Taking the mark off is not always enough**: GitHub decides the "Latest" when the release is created (`make_latest`), so a release that was published with `--prerelease` keeps the old "Latest" after the edit. Point it by name:
+
+```bash
+gh api -X PATCH repos/zFitness/nx2androidX/releases/<id> -F make_latest=true
+gh api repos/zFitness/nx2androidX/releases/latest --jq .tag_name     # the tag it answers with
+```
+
+The `curl` above is served from a cache: add a query (`?nocache=1`) when it still shows the old tag.
+
 The name in the tag keeps its alpha; the next pre-release does not take that place on its own. Which release is the current one is written down in AGENTS.md §3.
 
 ## The traps
@@ -110,3 +120,4 @@ The name in the tag keeps its alpha; the next pre-release does not take that pla
 ## After the release
 
 - The device check of the release itself (the APK installed over the last one, the version in the settings) is still open until a phone is connected.
+- The APK goes to the Quark Drive folder **我的/nx2AndroidX**, and the older versions there are cleared: [nx2android-quark-upload](nx2android-quark-upload/SKILL.md).

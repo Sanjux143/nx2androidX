@@ -190,14 +190,20 @@ class AdaptivePace(unittest.TestCase):
         block = src[src.index('static const int64_t STEPS[]'):src.index('static int64_t work_pct(int q)')]
         harness = r'''
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#define LOG(...) do { if (0) printf(__VA_ARGS__); } while (0)
 
 ''' + block + r'''
 int main(void) {
     (void)STEPS;
     (void)g_adapt; (void)g_work_hist; (void)g_nwork; (void)g_last_change; (void)g_last_up; (void)g_up_hold;
     (void)g_ok_frames; (void)g_game_period;
+    // the Android Game Mode's policy (upstream's shape: the environment is read every 30th call, the rest reads the cache)
+    game_mode_sync();
+    (void)adaptive_enabled();
     g_step = 0;
 #if FG_IMAGES > 1
     assert(dm_perf_pq_pace(5000000) == 5000000);   // 60 fps with the frame generation on: the wait is a pace

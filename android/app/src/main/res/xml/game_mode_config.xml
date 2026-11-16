@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The game mode (Android 13+): the app handles the performance mode itself, so the device maker's own
+     interventions step aside and the host's pacing policy lets the game keep its own period
+     (upstream's #294). The Android 12 form is the meta-data in the manifest. -->
+<game-mode-config xmlns:android="http://schemas.android.com/apk/res/android"
+    android:supportsPerformanceGameMode="true" />

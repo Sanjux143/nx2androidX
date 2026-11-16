@@ -99,6 +99,20 @@ def check_room():
     if avail is not None and avail < 256:
         red(f'the device has only {avail:.0f} MB of memory free: the shader split has no room to run; close the other apps and start it again')
 
+SMALL_FILE = 64   # MB: a file this small cannot fill the device's memory (check_room refuses a device with less than 256 MB free), so it needs no memory figures
+
+def read_whole(path):
+    """A file's bytes, read whole: the split's readers take a whole file (a Unity bundle, an archive's data file, the main program). A file that does not fit in this device's memory is
+    refused with a clear error instead of being read: the system kills the split otherwise, and the log says nothing about it"""
+    size = os.path.getsize(path)
+    if size > SMALL_FILE * 1024 * 1024:
+        _, avail = meminfo()
+        if avail is not None:
+            room = max(avail / 2, budget_mb())   # MB: half of what is free, or the split's own budget, whichever is larger
+            if size > room * 1024 * 1024:
+                red(f'{path}: {size:,} bytes do not fit in this device\'s memory ({avail:.0f} MB free, the split reads a file whole up to {room:.0f} MB): close the other apps and start it again')
+    with open(path, 'rb') as f: return f.read()
+
 def spill_file():
     """This process's spill file (one per process)"""
     global _SPILL
@@ -407,7 +421,7 @@ def linkdata_jobs(path, rel, parts=64):
 
 def linkdata_shaders(path, rel, rng, out):
     import mmap
-    with open(os.path.join(os.path.dirname(path), 'DATA0.bin'), 'rb') as f: idx = f.read()
+    idx = read_whole(os.path.join(os.path.dirname(path), 'DATA0.bin'))
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for i in range(*rng):
             off, n, stored, comp = struct.unpack_from('<QQQQ', idx, i * 32)
@@ -641,7 +655,7 @@ def gfpak_decoded(label, size):
     if not root: return None
     p = os.path.join(root, label.lstrip('/').replace('/', '__') + '.dec')
     if not os.path.exists(p): return None
-    b = open(p, 'rb').read()
+    b = read_whole(p)
     if b[:4] != b'DGFD' or struct.unpack_from('<Q', b, 4)[0] != size: return None
     out, o = {}, 16
     for _ in range(struct.unpack_from('<I', b, 12)[0]):
@@ -695,10 +709,10 @@ def nlg_shaders(path, label, out):
     stream), u16 top-level entry count, u16, u32 new length of each of 16 sections, 16 u32 end and 16 u32 start of the old data the packing overwrites before reading it} (main+0x1bb60).
     Every variant whose files are in RomFS is read (the 13 even records; the odd ones point into '.nxpc', which is not shipped), and the shaders found pair by order (checked one by one)"""
     import zlib
-    d = open(path, 'rb').read(); stem = path[:-len('.dict')]
+    d = read_whole(path); stem = path[:-len('.dict')]
     comp, recs, chunks, names = nlg_dict(d)
-    files = {i: open(stem + nm, 'rb').read() for i, nm in enumerate(names) if os.path.exists(stem + nm)}
-    patch = open(stem + '.patch', 'rb').read() if os.path.exists(stem + '.patch') else None
+    files = {i: read_whole(stem + nm) for i, nm in enumerate(names) if os.path.exists(stem + nm)}
+    patch = read_whole(stem + '.patch') if os.path.exists(stem + '.patch') else None
     cache = {}
     def chunk(ci):
         if ci not in cache:
@@ -749,7 +763,7 @@ def bhd5_entries(path):
     The index holds only path hashes, no names. → [(hash, offset, size)], or None when there is no index beside the file"""
     idx = path[:-4] + '.bhd5'
     if not path.endswith('.bdt') or not os.path.exists(idx): return None
-    with open(idx, 'rb') as f: d = f.read()
+    d = read_whole(idx)
     if d[:5] != BHD5 + b'\xff': red(f'{idx}: not a little-endian BHD5 index')
     nb, tab = struct.unpack_from('<I4xQ', d, 0x10)
     out = []
@@ -1056,7 +1070,7 @@ def arh_entries(path):
     +0x20 file count, +0x24 key ^ 0xf3f35353. The string and node tables are XORed word by word with the key. The paths are a trie in the node table ({i32 next, i32 prev}; a node with next < 0
     ends a path: -next is its suffix in the string table, followed by the file index), read back from each end node. The file table: 0x18-byte entries {u64 offset in the .ard, u32 stored length,
     u32 length, u32 type (0 stored, 2 an xbc1 container: 0x30-byte header, then the stream), u32 index}. → [(path, offset, stored length, length, type)], or None when path is no index"""
-    a = open(path, 'rb').read()
+    a = read_whole(path)
     if a[:4] != ARH1: return None
     w = list(struct.unpack_from(f'<{len(a) // 4}I', a)); key = w[9] ^ 0xF3F35353
     for o, n in ((w[3], w[4]), (w[5], w[6])):
@@ -1246,6 +1260,17 @@ def ue_inline_shaders(d, label, out):
         i = m.start(); n = int.from_bytes(d[i - 4:i], 'little') if i >= 4 else 0
         if 2 <= n <= len(d) - i and uepak.lslg(d[i:i + n]): take(d[i:i + n], i)
 
+def ue_modern_pack(path):
+    """Whether the file is an Unreal modern pak (version 11) or an IoStore container (.utoc / .ucas): the shaders of a modern Unreal game live in the shader code archives the decode stage
+    wrote (ue_shaders), not in the file, and these are the biggest files of its RomFS (FINAL FANTASY RESONANCE's are 8.9 GB) — reading them whole finds nothing and fills the device's
+    memory. A legacy pak (version 4) keeps its shaders inline in the cooked packages, so it is left to the legacy path"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.ucas', '.utoc'): return True
+    if ext != '.pak': return False
+    try:
+        with open(path, 'rb') as f: return uepak.pak_version(f) == 11
+    except (OSError, ValueError, struct.error): return False
+
 def yaz0(s):
     """Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
     Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
@@ -1281,24 +1306,30 @@ def sarc_members(d):
 NV_STAGES = ['vs', 'ps', 'gs', 'hs', 'ds', 'cs']   # NVN stage order
 COMMON, TREES = None, {}   # Unity common strings and borrowed type trees (given when the pool starts)
 ZDICTS, _ZD = {}, {}       # zstd dictionaries by ID (given when the pool starts) and their digested form in this process
+_POOL_FN = None            # the work a pool child does (given when the pool starts: the pool sends it to the children as an argument, so it cannot be a local function)
+
+def _pool_run(item):
+    """One item's work in a pool child: what the child wrote goes to the spill file before the parent reads it"""
+    r = _POOL_FN(item)
+    spill_flush()
+    return r
 
 def pool_map(fn, items, J, initargs, chunksize=1):
     """The work in a pool of processes. A host without /dev/shm (Android has none) cannot make the POSIX semaphores the
     pool needs, so the children are forked instead (forkpool.py): the same work, in parallel, without semaphores"""
-    def run(item):
-        r = fn(item)
-        spill_flush()   # what the child wrote goes to disk before the parent reads it
-        return r
     spill_flush()   # what this process wrote goes to disk before the children are forked (they inherit its handle)
+    args = tuple(initargs) + (fn,)
     try:
-        with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=initargs) as ex:
-            return list(ex.map(run, items, chunksize=chunksize))
+        with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=args) as ex:
+            return list(ex.map(_pool_run, items, chunksize=chunksize))
     except (FileNotFoundError, OSError) as e:
         print(f'note: no process pool ({e.__class__.__name__}: {e}): the work runs in forked children', file=sys.stderr)
-        return fork_map(run, items, J, lambda: _pool_init(*initargs))
+        return fork_map(_pool_run, items, J, lambda: _pool_init(*args))
 
-def _pool_init(common, trees, zdicts={}):
-    global COMMON, TREES, ZDICTS
+def _pool_init(common, trees, zdicts={}, fn=None):
+    global COMMON, TREES, ZDICTS, _POOL_FN
+    COMMON, TREES, ZDICTS = common, trees, zdicts
+    _POOL_FN = fn
     COMMON, TREES, ZDICTS = common, trees, zdicts
 
 def zs_dicts(romfs):
@@ -1306,13 +1337,13 @@ def zs_dicts(romfs):
     a SARC (itself plain zstd) of *.zsdic files, each a zstd dictionary (magic 0xEC30A437, then its ID). → {ID: dictionary}; {} without that file (Mario's .zs are plain zstd)"""
     p = os.path.join(romfs, 'Pack/ZsDic.pack.zs')
     if not os.path.exists(p): return {}
-    d = zstd_mod().decompress(open(p, 'rb').read())
+    d = zstd_mod().decompress(read_whole(p))
     return {struct.unpack_from('<I', m, 4)[0]: m for _, m in sarc_members(d) if m[:4] == bytes.fromhex('37a430ec')}
 
 def unzs(path):
     """A zstd file decompressed: frames without a dictionary as they are, frames that name one with that dictionary from ZDICTS. The zstd module, not the zstd command: Windows has no
     such command (Mario vs. Donkey Kong's .zs shaders stopped the split there), and the porter already requires the module"""
-    d = open(path, 'rb').read()
+    d = read_whole(path)
     fhd = d[4] if len(d) > 5 and d[:4] == bytes.fromhex('28b52ffd') else 0
     n, o = (0, 1, 2, 4)[fhd & 3], 6 - (fhd >> 5 & 1)   # dictionary ID size; it follows the window descriptor, which single-segment frames omit
     did = int.from_bytes(d[o:o + n], 'little')
@@ -1664,9 +1695,12 @@ def scan_file(args):
     stem, ext = os.path.splitext(path)
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
+    if ue_modern_pack(path):   # an Unreal modern pak or an IoStore container: its shaders are in the shader code archives (ue_shaders), not in the file — reading it whole finds nothing and fills the device's memory
+        print(f'skipped {rel}: {os.path.getsize(path):,} bytes, an Unreal modern pak or an IoStore container (the shaders are in the shader code archives)', flush=True)
+        return rel, {}, set(), {}
     found = []; trees = {}
     if LOOSE_MONO and ext in LOOSE_MONO and not (len(args) > 2):   # a loose Monolith file (.wishp, .wismt, .wismda …): HCPS archives in the file itself or in its xbc1 streams (mono_shaders)
-        mono_shaders(open(path, 'rb').read(), '/' + rel, found)
+        mono_shaders(read_whole(path), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == NLG_DICT:
         nlg_shaders(path, '/' + rel, found)
@@ -1699,7 +1733,7 @@ def scan_file(args):
         linkdata_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == BND2:   # a Criterion Bundle 2 (Need for Speed: Hot Pursuit Remastered's SHADERS.BNDL): GLSLC outputs in its zlib resources (bnd2_shaders)
-        found += bnd2_shaders(open(path, 'rb').read(), '/' + rel)
+        found += bnd2_shaders(read_whole(path), '/' + rel)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:3] == b'PAK':   # a Heaps PAK archive (Dead Cells): only its shader cache is read, not its 2 GB of other files (heaps_pak_files, heaps_shaders)
         with open(path, 'rb') as f:
@@ -1710,21 +1744,21 @@ def scan_file(args):
                         f.seek(off); found += heaps_shaders(f.read(n), f'/{rel}{nm}')
                 return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
-        kt_shaders(open(path, 'rb').read(), '/' + rel, found)
+        kt_shaders(read_whole(path), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
-    if head[:4] == b'\0\0\2\0' and path.endswith('.gz') and (z := kt_gz(open(path, 'rb').read(), 0x20000)) is not None:   # Ultra Kaiju Monster Rancher's chunked zlib files (128 KB chunks): taken only when the whole file parses as one; anything else reads raw as before
+    if head[:4] == b'\0\0\2\0' and path.endswith('.gz') and (z := kt_gz(read_whole(path), 0x20000)) is not None:   # Ultra Kaiju Monster Rancher's chunked zlib files (128 KB chunks): taken only when the whole file parses as one; anything else reads raw as before
         kt_shaders(z, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == MTARC:   # an MT Framework archive (mtarc_members): its shader package
-        mtarc_shaders(open(path, 'rb').read(), '/' + rel, found)
+        mtarc_shaders(read_whole(path), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == SCNE:   # a Bezel Engine archive (bea_members): each entry scanned as a file of its own (the shaders are BNSH in its .bfsha entries)
-        for nm, m in bea_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}/{nm}', found)
+        for nm, m in bea_members(read_whole(path), '/' + rel): scan_blob(m, f'/{rel}/{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] == GFPAK:   # a Game Freak archive (gfpak_members): each entry scanned as a file of its own (the shaders are BNSH entries)
-        for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
+        for nm, m in gfpak_members(read_whole(path), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
-    d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
+    d = unzs(path) if head[:4] == ZSTD_MAGIC else read_whole(path)   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib, before the shader prefilter
     if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC): d = unsized(d, '/' + rel)   # a size-prefixed frame (unsized): Kirby and the Forgotten Land keeps its BNSH in 7,201 .cmp files; read raw, the split found 121 of its 27,297 shaders
     if d[:4] == b'Yaz0': d = yaz0(d)
@@ -1752,7 +1786,7 @@ def uniq_keys(found):
 
 def nso_image(path):
     import lz4.block
-    d = open(path, 'rb').read()
+    d = read_whole(path)
     flags = struct.unpack_from('<I', d, 0xc)[0]; segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]; csz = struct.unpack_from('<III', d, 0x60)
     img = bytearray(segs[2][1] + segs[2][2])
     for i, (fo, mo, sz) in enumerate(segs):

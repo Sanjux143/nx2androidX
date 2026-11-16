@@ -14,9 +14,25 @@ object Native {
     const val FRONT_CAPS_PLAYER = 1
     /** 能力位：宿主为 App 的性能 HUD 数帧（老宿主还在画面上自己画帧率计数器） */
     const val FRONT_CAPS_PERF = 2
+    /** 能力位：宿主能接第二个窗口（游戏到外接屏上，手机当手柄） */
+    const val FRONT_CAPS_EXTERNAL = 4
 
     @JvmStatic external fun start(pack: String, internal: String, titleId: String?, dpi: Int, env: Array<String>, ctx: Context): Boolean
     @JvmStatic external fun setSurface(surface: Surface?)
+
+    /**
+     * 外接屏的画面：App 在接上的显示器（USB-C 的 DP 输出、扩展坞）上开一个 presentation，
+     * 把它的 surface 交给宿主——游戏画到那里，手机（平板）自己变成手柄。
+     * 传 null 表示那块屏没了：游戏回到手机自己的画面。
+     */
+    @JvmStatic external fun externalSurface(surface: Surface?)
+
+    /**
+     * Android 的游戏模式（系统的 GameManager）：2 = 性能档，1 = 标准，0 = 不知道。
+     * 宿主那边（perf_android.c）据此换节奏策略：性能档里游戏自己的周期说话，系统的干预退场
+     * （上游 #294 的原生策略）。
+     */
+    @JvmStatic external fun perfGameMode(mode: Int)
     @JvmStatic external fun motion(source: Int, device: Int, action: Int, ids: IntArray, xs: FloatArray, ys: FloatArray, axis: FloatArray): Boolean
     @JvmStatic external fun key(device: Int, source: Int, code: Int, action: Int, meta: Int, repeat: Int): Boolean
 

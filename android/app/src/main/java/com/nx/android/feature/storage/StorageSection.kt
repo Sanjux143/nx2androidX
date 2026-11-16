@@ -62,8 +62,8 @@ import java.util.Date
  *
  * 数字逐行呈现：量完一段先出数，其余随后补齐，不拿空白的合计堵住整页。
  *
- * 排版照着同族项目 fexdroid 的占用面板：汇总一行大字，每行一个缩略图 + 名字 + 拆分，
- * 底下一条占比条——谁大谁小一眼就看出来，不必去比数字。
+ * 排版：汇总一行大字，每行一个缩略图 + 名字 + 拆分，底下一条占比条——谁大谁小一眼就
+ * 看出来，不必去比数字。
  */
 @Composable
 fun StorageSection(viewModel: StorageViewModel) {
@@ -113,7 +113,7 @@ fun StorageSection(viewModel: StorageViewModel) {
     NoteRow(stringResource(R.string.storage_note_rules))
 }
 
-/** 汇总：合计（fexdroid 的用法面板同款：大字 + 品牌色） */
+/** 汇总：合计（大字 + 品牌色） */
 @Composable
 private fun SummaryRow(total: Long, lowerBound: Boolean) {
     Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -242,7 +242,7 @@ private fun pathText(item: StorageUsage.Item): String {
     return paths.joinToString(" · ")
 }
 
-/** 统计的时间：今天的只给时刻，别的日子连日期一起（fexdroid 的做法） */
+/** 统计的时间：今天的只给时刻，别的日子连日期一起 */
 @Composable
 private fun measuredAtText(scannedAt: Long): String {
     if (scannedAt <= 0L) return stringResource(R.string.storage_not_measured)

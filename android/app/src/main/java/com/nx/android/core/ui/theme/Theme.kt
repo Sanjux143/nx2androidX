@@ -121,17 +121,21 @@ fun GlassPanel(
  * one small thing keep the default (the page behind stays visible), a page that covers
  * everything asks for nearly opaque — otherwise what is behind it bleeds through and
  * the two pages' words collide.
+ *
+ * [shape] is the sheet's own shape: most sheets keep the rounded card, a drawer that
+ * runs the full height of the screen rounds only the side that is not against the edge.
  */
 @Composable
 fun GlassSheet(
     modifier: Modifier = Modifier,
     alpha: Float = 0.78f,
+    shape: Shape = RoundedCornerShape(20.dp),
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
         modifier
-            .clip(RoundedCornerShape(20.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+            .clip(shape)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
     ) {
         Box(
             Modifier

@@ -296,7 +296,8 @@ int main(void) {
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
             # -Wno-misleading-indentation: gcc (15.2, Alpine) refuses nvn_dirty.c's one-line release_page under -Werror; clang never warns there
-            subprocess.run(['cc', '-std=gnu11', '-pthread', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-misleading-indentation',
+            # -Wno-unused-result: glibc's fortified write() is warn_unused_result, so gcc (Ubuntu) refuses nvn_dirty.c's (void)write under -Werror; musl has no such attribute
+            subprocess.run(['cc', '-std=gnu11', '-pthread', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-misleading-indentation', '-Wno-unused-result',
                             str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=60)
 

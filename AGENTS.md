@@ -53,7 +53,10 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 - 预发布用 GitHub **pre-release**（`--prerelease`）；app 的更新检查读 "Latest"，所以正式版玩家不会被推上 alpha。
   **GitHub 不允许预发布成为 "Latest"**（API：drafts and prereleases cannot be set as latest）：要让某个 alpha
   成为当前版本，就去掉它的预发布标记（`gh release edit <tag> --prerelease=false`）——tag 名字里的 `alpha` 不变，
-  之后的预发布不会自动抢走这个位置。现状：`v0.3.0-alpha06` 是 Latest
+  之后的预发布不会自动抢走这个位置。**只改标记可能不会让 "Latest" 指过去**：GitHub 的 "Latest" 在创建时
+  就定了（`make_latest`），事后去标记要另外显式点名：
+  `gh api -X PATCH repos/zFitness/nx2androidX/releases/<id> -F make_latest=true`。
+  现状：`v0.3.0-alpha12` 是 Latest
 - **构建只由 tag 触发**：推分支什么都不构建。tag 一推，构建就开始（产物从那个 tag 的提交来），
   它会等 release 建好后把 APK 附上去（`gh release create` 紧跟着 tag 就行）。**要重新构建就把 tag 重推一次**
   （`git tag -f` + `git push --force`），构建跟着新 tag 走
@@ -67,7 +70,7 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 - **notes 里要有一段 `Community ports`**，点名本版本涉及的社区贡献（谁移植了哪个游戏、谁修了什么）。
   名单用 `python3 devtools/release_contributors.py` 取（上个 tag 之后合并的 PR 与作者），粘进 notes；
   游戏级别的署名同时落在 `docs/PORT_CHECKLIST.md` 的那一行（`ported by @handle`）
-- app 的 `versionName` 在 `android/app/build.gradle.kts`（当前 `0.3.0-alpha05`），与 tag 去掉 `v` 一致
+- app 的 `versionName` 在 `android/app/build.gradle.kts`（当前 `0.3.0-alpha12`），与 tag 去掉 `v` 一致
 - **一次发布只带手机的 APK，别无其它**。桌面 workflow（`release-windows.yml` / `release-macos.yml`）不发版，
   只在需要时手动触发（Actions → 该 workflow → Run workflow），产物留在该次运行的 artifact 里
 - 每个 `gh` 命令都要带 `--repo zFitness/nx2androidX`（本机 gh 默认指向另一个仓库）

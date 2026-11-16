@@ -14,6 +14,7 @@
 #   setting      <name>=<value>, one row each: the pause menu's defaults on first launch (overlay, rumble, docked, fps, opacity: 20..80 by 5)
 #   env          <KEY>=<VALUE>, one row each: host switches the game needs on Android (the data pack's env.txt)
 #   overlay      <tablet|phone> <control> <x> <y>: moves one control of that layout (dm/android/overlay_default.tsv) to x, y as fractions of the window
+#   romfs        raw (default) | zstd: zstd puts the RomFS files that compress in the data pack as packed files (porter/romfs_pack.py), which the host reads back
 # Usage: android_profile.py header <id> <out.h> (android_profile.h for the host: the gamepad layouts, written only when it changes); android_profile.py list;
 #   android_profile.py <id> [<key>] (the profile's keys, or one key's value); android_profile.py theme <id> (the gamepad theme pack porter puts in the APK)
 # From Python: import android_profile; p = android_profile.load(<id>) (None without android.tsv); p.status, p.package, p.settings, p.env, p.overlay_table();
@@ -32,7 +33,7 @@ SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), '
 REQUIRES = ('bcn',)
 GRAPHICS = ('vulkan', 'gl', 'nvn')
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'graphics', 'lan')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'graphics', 'lan', 'romfs')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -98,6 +99,8 @@ class AndroidProfile:
     def requires(self): return self.get('requires').split()
     @property
     def sysdata(self): return [int(t, 16) for t in self.get('sysdata').split()]   # title IDs
+    @property
+    def romfs_zstd(self): return self.get('romfs', 'raw') == 'zstd'   # the data pack's RomFS compressed (porter/romfs_pack.py)
 
     @property
     def graphics(self): return self.get('graphics', '')   # 'vulkan' | 'gl' | 'nvn' ('' when it is not known)
@@ -126,6 +129,7 @@ class AndroidProfile:
         if self.status not in STATUS: bad.append(f'status {self.status!r}: one of {", ".join(STATUS)}')
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): bad.append(f'package {self.package!r} is not a package name')
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
+        if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
         bad += [f'requires {r!r}: one of {", ".join(REQUIRES)}' for r in self.requires if r not in REQUIRES]
         bad += [f'sysdata {t!r}: a 16-digit hex title ID' for t in self.get('sysdata').split() if not re.fullmatch(r'[0-9A-Fa-f]{16}', t)]
         if self.graphics and self.graphics not in GRAPHICS: bad.append(f'graphics {self.graphics!r}: one of {", ".join(GRAPHICS)}')

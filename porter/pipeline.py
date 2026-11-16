@@ -7,7 +7,7 @@ import hashlib, importlib.util, json, mmap, os, re, shutil, socket, struct, subp
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, product_cache, profiles, toolchain
+from porter import config, datapack, dumps, fpslocker, install, paths, product_cache, profiles, romfs_pack, toolchain
 from porter.revision import PLAYER_API_REVISION
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
@@ -1006,6 +1006,7 @@ class Port:
                  '--data-root', str(self.data_dir()),
                  '--version-code', str(code), '--version-name', self.display]
                 + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + self.ui_font() + external + ([] if self.o.debug else ['--release'])
+                + (['--game-mode-performance'] if getattr(self, 'gl', None) is False else [])   # only NVN implements the mode's pacing policy; GL keeps OEM interventions
                 + [a for f in dict.fromkeys(str(f) for f in (self.drivers() + self.loader_libs() + self.loader_so()
                                                              + ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []))) for a in ('--extra-so', f)]
                 + (['--dex', str(dex)] if (dex := launcher_dex()) else []),
@@ -1119,11 +1120,17 @@ class Port:
         dst = self.data_dir()
         files = {**self.fps_files, **font_files}
         host = icon = None; drivers = []
-        romfs, romfs_at = self.game / 'RomFS', None
+        romfs, romfs_at, zenv = self.game / 'RomFS', None, []
+        if getattr(self.ap, 'romfs_zstd', False) and romfs.is_dir():   # android.tsv romfs zstd: packed copies of the files that compress, made once into the build folder; the rest stay links to the extraction
+            PROG.set(step='compressing the RomFS', done=0, total=1, unit='B')
+            nf, npk, raw, out = romfs_pack.pack_tree(romfs, self.aw / 'romfs_zstd' / self.pkg_ver, self.o.jobs, progress=lambda d, t: PROG.set(step='compressing the RomFS', done=d, total=t, unit='B'))
+            say(f'RomFS compressed: {npk:,} of {nf:,} files packed, {raw / 2**30:.1f} GB -> {out / 2**30:.1f} GB on the device')
+            romfs, zenv = self.aw / 'romfs_zstd' / self.pkg_ver, ['DM_ROMFS_ZSTD=1']
         if self.o.app:   # the app runs the game itself: the pack carries what the APK used to (the host with the player's entry, the drivers, the icon, the gamepad's theme)
             # the app's mode: the pack points at the build folder's own RomFS instead of copying it (the same game twice on the phone is too much).
             # The pack's env.txt says where the host reads it from, and the manifest says the same, so the app knows the pack needs that folder.
             # A game without a RomFS (an OpenGL ES one) has none to point at: the pack keeps no RomFS, as before.
+            # With the RomFS compressed (android.tsv romfs zstd) it points at the packed folder in the build workspace, which is where the packer wrote it.
             if romfs.is_dir():
                 romfs_at, romfs = str(romfs), None
             host = 'host/libdmplay.so'
@@ -1133,7 +1140,7 @@ class Port:
             for d in self.drivers() + self.loader_libs(): files[f'drivers/{d.name}'] = d
             drivers = sorted({f'drivers/{d.name}' for d in self.drivers() + self.loader_libs()})
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs, romfs_at=romfs_at, shaders=self.dmsv,
-                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files=files, text=self.lists(), host=host, icon=icon, drivers=drivers, profile_h=getattr(self, 'profile_h', None),
                              pack_base=str(dst) if self.o.app else None,   # the app's mode: the pack lives in the app's own folder, not in the app's files folder

@@ -56,12 +56,18 @@ static ALooper *g_ilooper;   // the input thread's looper (the accelerometer's q
 static JavaVM *g_app_vm; static jobject g_app_act;   // the app's Activity: the notices to it, and the display's rotation for the motion
 
 // ---- the front end's capabilities: what this host can do (the app asks right after loading it) ----
-int dm_front_caps(void) { return DM_FRONT_CAPS_PLAYER | DM_FRONT_CAPS_PERF; }   // the player front: the app draws the gamepad, the host draws no panel of its own; the host counts the frames for the app's HUD
+int dm_front_caps(void) { return DM_FRONT_CAPS_PLAYER | DM_FRONT_CAPS_PERF | DM_FRONT_CAPS_EXTERNAL; }   // the player front: the app draws the gamepad, the host draws no panel of its own; the host counts the frames for the app's HUD; the host takes a second window for an external display
 
 // ---- the window: the app's Surface, passed over from Java (jni_android.h) ----
+// Two windows: the phone's own (the app's SurfaceView, where the gamepad is drawn) and the optional external one
+// (a presentation on a wired display). The game is drawn into the front window (dm_front_window): the external one
+// when it is there (the phone becomes the gamepad), the phone's otherwise.
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
-static ANativeWindow *g_win;
-ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
+static ANativeWindow *g_win, *g_external_win;
+static _Atomic int g_external_active;
+ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_external_win ? g_external_win : g_win; pthread_mutex_unlock(&g_win_mu); return w; }
+static ANativeWindow *phone_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
+int dm_external_active(void) { return atomic_load(&g_external_active); }
 __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of the window's swapchain before the window goes
 static ANativeWindow *g_jwin;
 void dm_java_window_take(ANativeWindow *w) {
@@ -73,6 +79,18 @@ void dm_java_window_drop(void) {
     pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_jwin; g_jwin = NULL; g_win = NULL; pthread_mutex_unlock(&g_win_mu);
     vk_window_lost();
     if (w) ANativeWindow_release(w);
+}
+
+// The external display's surface (the app's presentation on a wired display). It takes the game over: the front
+// window becomes it, so the swapchain is built there and the phone keeps the gamepad. A null surface means the
+// display is gone: the game goes back to the phone's window.
+void dm_external_window_set(ANativeWindow *w) {
+    if (w) ANativeWindow_acquire(w);   // our own reference (the caller releases its own, as dm_java_window_take's caller does)
+    pthread_mutex_lock(&g_win_mu); ANativeWindow *old = g_external_win; g_external_win = w; atomic_store(&g_external_active, w != NULL); pthread_mutex_unlock(&g_win_mu);
+    dm_touch_set(NULL, 0);   // the game's touches go away with the old window (the phone's touches are the gamepad's from now on)
+    vk_window_lost();   // the swapchain belongs to the old window: it is built again on the new one
+    if (old) ANativeWindow_release(old);
+    LOG("[display] the external display %s", w ? "took the game" : "is gone: the game is back on the phone");
 }
 
 // ---- the data pack: the folder the port wrote (dm_java_start's pack argument) ----
@@ -146,9 +164,11 @@ static void shake_sensor(int on);   // the accelerometer, off in the background 
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension
     hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
 static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
+void dm_perf_gpu_release(void);   // perf_android.c: the GPU's clock control back to its governor (DM_GPU_TURBO)
 // the player's lifecycle (jni_android.h): the same dance
 void dm_java_lifecycle(int ev) {
-    if (ev == 0) go_background();
+    // the clock control goes back after go_background: its dm_gfx_suspend waits for the presents in progress, and one of them could otherwise set the GPU's power control again
+    if (ev == 0) { go_background(); dm_perf_gpu_release(); }
     else if (ev == 1) go_foreground();
     else if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(ev == 2 ? 1 : 2);   // 2 focus, 3 unfocus
 }
@@ -259,7 +279,8 @@ static _Atomic int g_pad_in = -1;   // the device that last sent a controller's 
 int dm_overlay_visible(void) { return 0; }   // the render side: the app draws the gamepad in the player, so the host draws none of it
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, phone;
-    ANativeWindow *w = dm_front_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
+    // the phone's own window: the gamepad is drawn there, even when the game is on an external display
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
     if (ww != last_w || wh != last_h) { last_w = ww; last_h = wh; phone = wh > 0 && (float)ww / (float)wh >= OV_PHONE_ASPECT;
         if (wh > 0) LOG("[overlay] window %dx%d: the %s layout", ww, wh, phone ? "phone" : "tablet"); }
     return phone;
@@ -276,7 +297,8 @@ float dm_overlay_opacity(void) { return atomic_load(&g_set_opacity) / 100.0f; }
 static void cust_place(int set, int l, int i, float x, float y) { atomic_store(&g_cust[set][l][i][0], 1 + (int)lroundf(x * 10000)); atomic_store(&g_cust[set][l][i][1], 1 + (int)lroundf(y * 10000)); }
 float dm_overlay_scale(void) {
     static int last_w = -1, last_h = -1; static float s = 1;
-    ANativeWindow *w = dm_front_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
+    // the phone's own window: the buttons are sized for the screen they are drawn on (the game may be elsewhere)
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
     if (h != last_h || ww != last_w) { last_w = ww; last_h = h; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
         float face = 0.1f; const ov_ctl *L = OV_CTLS; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;   // A's width, in window heights
         if (h > 0 && g_dpi > 0 && g_dpi < 0xfffe) { float mm = face * (float)h / (float)g_dpi * 25.4f; s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f; }   // (more and the face buttons touch)
@@ -301,9 +323,13 @@ void dm_pad_layout_save(void) { settings_save(); }
 // into the game's picture). The app worked out what every touch hit (its own hit test, the same numbers the host used).
 void dm_pad_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry, const int32_t *ids, const float *xs, const float *ys, int n) {
     dm_input_set(buttons, lx, ly, rx, ry);
-    dm_touch t[16]; int m = 0;
-    ANativeWindow *w = dm_front_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
+    // The game is on an external display: the phone's touches are the gamepad's, not the game's. The game's own
+    // touch screen is not wired to the external display (the phone is the gamepad here; the keys and the sticks
+    // are the input), so the phone's touches do not go there.
+    if (dm_external_active()) return;
+    ANativeWindow *w = phone_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic); if (pic[2] <= 0 || pic[3] <= 0) pic[2] = pic[3] = 1;   // gfx_vk_present.c: the picture inside the window
+    dm_touch t[16]; int m = 0;
     for (int i = 0; i < n && m < 16 && ids && xs && ys; i++) {
         t[m].id = (uint32_t)(ids[i] & 15);
         t[m].x = (xs[i] / W - pic[0]) / pic[2];
@@ -332,7 +358,8 @@ void dm_pad_devices(int count) {
 // takes a touch (the reach). The size factor is the player's own (1 = the layout's), so the app can scale a control from it.
 static const char *pad_kind_name(int kind) { return kind == OV_STICK_L || kind == OV_STICK_R ? "stick" : kind == OV_DPAD ? "dpad" : kind == OV_MENU ? "menu" : "button"; }
 char *dm_pad_layout_json(void) {
-    ANativeWindow *w = dm_front_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
+    // the phone's own window: the gamepad is drawn there, even when the game is on an external display
+    ANativeWindow *w = phone_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     int L = dm_overlay_layout();
     size_t cap = 512 + (size_t)DM_AOV_N * 200; char *out = malloc(cap); if (!out) return NULL;
     size_t o = (size_t)snprintf(out, cap, "{\"layout\":\"%s\",\"ver\":%d,\"opacity\":%d,\"w\":%.0f,\"h\":%.0f,\"scale\":%.5f,\"controls\":[",
@@ -662,6 +689,7 @@ static void *host_thread(void *a) {
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
     LOG("host returned %d", rc);
+    dm_perf_gpu_release();   // the game ended itself: the device-wide KGSL property outlives the process (perf_android.c)
     _exit(rc);
 }
 static void env_file(const char *path) {   // KEY=VALUE per line (# comments): switches without rebuilding, as the iOS app's Documents/env.txt

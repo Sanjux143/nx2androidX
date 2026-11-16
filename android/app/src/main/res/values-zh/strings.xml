@@ -186,6 +186,8 @@
     <string name="motion_raw_note">游戏读实测的方向，不用宿主生成的波形。</string>
     <string name="set_section_about">关于</string>
     <string name="set_version">版本</string>
+    <string name="set_file_provider_title">文件管理器访问</string>
+    <string name="set_file_provider_note">App 自己的目录（运行时、存档、日志）会在系统选择器和文件管理器里显示为一个根，不用电脑也能查看和处理。</string>
     <string name="set_rerun_onboarding">重新运行引导</string>
     <string name="set_rerun_onboarding_hint">已完成的部分（权限、环境、keys）会被认出来，直接呈现为完成</string>
     <string name="set_run_onboarding">运行</string>
@@ -245,6 +247,10 @@
     <string name="drawer_docked_hint">开启后按电视的分辨率渲染，画面更清晰，也更耗电；关闭后帧率更高。</string>
     <string name="drawer_group_pad">手柄</string>
     <string name="drawer_group_motion">体感</string>
+    <string name="drawer_group_display">画面</string>
+    <string name="drawer_external_display">外接屏</string>
+    <string name="drawer_external_hint">游戏画到接上的显示器上，手机当手柄。</string>
+    <string name="drawer_external_no_display">没有接上显示器 —— 插一个到 USB-C 上。</string>
     <string name="drawer_group_clock">时钟</string>
     <string name="drawer_gpu_turbo">GPU 提频</string>
     <string name="drawer_gpu_turbo_off">关</string>

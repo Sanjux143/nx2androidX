@@ -85,7 +85,8 @@ The driver a game runs with is picked in the library's drawer (**Vulkan driver**
 
 - **Android 8.0 (API 26) or newer**.
 - **1.5 GB of free space to start**: the APK is about 272 MB, the environment unpacked on the first launch about 700 MB, on top of your own game files and the data packs.
-- **A GPU that reads BC-compressed textures**: Adreno (Snapdragon) and Xclipse (Exynos 2200 and later) do; Mali and PowerVR do not. The tested device is a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830).
+- **A GPU that reads BC-compressed textures**: the app is developed and tested on Qualcomm **Adreno** (Snapdragon) — the tested device is a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). Xclipse (Exynos 2200 and later) should read BC textures too, but no Xclipse device has been tested.
+- **Other GPUs (Mali/Immortalis on Dimensity, PowerVR)**: untested. They do not read BC textures, so the runtime decodes them on the CPU — slower, and more memory. The desktop tool's install step still refuses them by name; the phone route does not. Your own experiment: if a game runs, tell us the device.
 - **Your own game files and `prod.keys`**, dumped from your own Switch: the tool never downloads either.
 
 ## Games

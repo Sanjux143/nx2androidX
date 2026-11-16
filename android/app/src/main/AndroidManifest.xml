@@ -33,7 +33,19 @@
         android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
+        android:appCategory="game"
         android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- The game mode (Android 12+): the system tells the app which mode it is in (performance,
+             standard), and this app handles the performance mode itself — the host's pacing policy lets
+             the game keep its own period (upstream's #294: the mode replaces the device maker's own
+             interventions). The XML form is Android 13+; the meta-data is the Android 12 one. -->
+        <meta-data
+            android:name="android.game_mode_config"
+            android:resource="@xml/game_mode_config" />
+        <meta-data
+            android:name="com.android.app.gamemode.performance.enabled"
+            android:value="true" />
 
         <!-- The shell: the library, the builds and the settings — and the root of the app's task. standard on
              purpose: the game page sits on top of it in the same task, and a singleTask shell would finish
@@ -102,6 +114,22 @@
         <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
     </intent-filter>
 </provider>
+
+        <!-- The app's own folders (the runtime, the tools, the hosts, the saves, the logs) as a document
+             provider: they show up as one root in the system picker and in the file managers that speak
+             SAF, so the player can look at them and fix them without a computer. The permission is the
+             system's own (only the system file manager binds it directly; any other app needs the
+             player's own permission in the picker), the same shape AOSP's file system provider uses. -->
+        <provider
+            android:name="com.nx.android.app.provider.NxFilesProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
 
     </application>
 </manifest>

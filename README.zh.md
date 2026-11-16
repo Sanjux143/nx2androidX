@@ -81,7 +81,8 @@
 
 - **安卓 8.0（API 26）以上**。
 - **空闲空间 1.5 GB 起**：APK 约 272 MB，首次启动的环境约 700 MB，再加上你自己的游戏文件和数据包。
-- **GPU 要能读 BC 压缩纹理**：Adreno（骁龙）、Xclipse（Exynos 2200 及以后）可以；Mali、PowerVR 不行。实测设备是联想拯救者 Y700（骁龙 8 Elite，Adreno 830）。
+- **GPU 要能读 BC 压缩纹理**：App 只在**高通 Adreno**（骁龙）上开发和测试 —— 实测设备是联想拯救者 Y700（骁龙 8 Elite，Adreno 830）。Xclipse（Exynos 2200 及以后）按理也能读 BC 纹理，但没有在 Xclipse 设备上实测过。
+- **其它 GPU（天玑的 Mali/Immortalis、PowerVR）**：没有实测。它们读不了 BC 纹理，运行时改用 CPU 解码 —— 更慢，也更占内存。桌面工具的安装步骤仍会按 GPU 名称拒绝它们，手机那条路不拦。自己的实验场：跑通了告诉我们是什么设备。
 - **自己的游戏文件和 `prod.keys`**：从你自己的 Switch 导出，工具不会替你下载。
 
 ## 游戏列表

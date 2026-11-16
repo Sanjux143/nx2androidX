@@ -66,6 +66,7 @@ import com.nx.android.feature.filepicker.PickerRequest
 import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.components.StatusDot
 import com.nx.android.core.ui.components.SubtitleRow
+import com.nx.android.core.ui.components.SwitchRow
 import com.nx.android.core.ui.components.rememberPageScroll
 import com.nx.android.core.ui.components.step
 import com.nx.android.core.ui.failureText
@@ -373,6 +374,8 @@ private fun DisplaySection(actions: AppActions, onRequest: (PickerRequest) -> Un
 private fun AboutSection(ob: OnboardingState, update: UpdateViewModel, actions: AppActions) {
     val ctx = LocalContext.current
     val locale = LocalAppLocale.current
+    // 文件管理器能不能看见 App 的私有目录（运行时、存档、日志）。这一份跟着设置走。
+    var fileProviderOn by remember { mutableStateOf(actions.fileProvider()) }
 
     // 版本号点一下去 GitHub 仓库
     InfoRow(title = stringResource(R.string.set_version), value = actions.version(), onClick = { openRepo(ctx) })
@@ -388,6 +391,18 @@ private fun AboutSection(ob: OnboardingState, update: UpdateViewModel, actions: 
         note = stringResource(R.string.set_language_note),
         onPrev = { locale.pick(step(modes, locale.mode, -1)) },
         onNext = { locale.pick(step(modes, locale.mode, +1)) },
+    )
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    // 私有目录交给文件管理器：系统文档提供器把 App 的目录挂成一个根，玩家能在文件管理器里
+    // 看见运行时、存档、日志，也能自己改。关掉它，那一个根就消失。
+    SwitchRow(
+        title = stringResource(R.string.set_file_provider_title),
+        checked = fileProviderOn,
+        note = stringResource(R.string.set_file_provider_note),
+        onChange = { on ->
+            actions.onSetFileProvider(on)
+            fileProviderOn = on
+        },
     )
     ActionRow(
         title = stringResource(R.string.set_rerun_onboarding),

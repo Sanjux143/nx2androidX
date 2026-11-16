@@ -33,7 +33,12 @@ void dm_pad_mapping_set(const char *spec);
 void dm_pad_release_all(void);
 void dm_java_window_take(ANativeWindow *w);     // the app's Surface is here (the reference passes over)
 void dm_java_window_drop(void);                 // it is going: the swapchain is destroyed before this returns
+void dm_external_window_set(ANativeWindow *w);   // the external display's Surface (the app's presentation on a wired
+                                                 // display): the game goes there and the phone becomes the gamepad.
+                                                 // NULL: the display is gone, the game goes back to the phone's window
 void dm_java_lifecycle(int ev);                 // 0 pause, 1 resume, 2 window focus, 3 window unfocus
+void dm_perf_game_mode(int mode);                // the Android game mode (2 = performance): the pacing policy lets the
+                                                 // game keep its own period (perf_android.c; upstream's #294)
 int dm_java_start(const char *pack, const char *internal, const char *title_id, int dpi, JNIEnv *E, jobject ctx);
                                                 // the pack folder, the app's internal folder, the game's title id
                                                 // (saves, logs and temp go under it), the display density, the call's
@@ -66,6 +71,7 @@ char *dm_pad_layout_json(void);              // the layout: the controls' places
 // with an older front has no such entry at all (the call raises UnsatisfiedLinkError), and the app then says the pack has to be ported again.
 #define DM_FRONT_CAPS_PLAYER 1   // the player front end: the app draws the gamepad, the host draws no panel of its own
 #define DM_FRONT_CAPS_PERF 2    // the host counts the frames for the app's performance HUD (and draws no frame rate counter of its own any more)
+#define DM_FRONT_CAPS_EXTERNAL 4 // the host takes a second window: the game goes to an external display and the phone becomes the gamepad
 int dm_front_caps(void);
 
 #endif

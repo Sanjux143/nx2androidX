@@ -164,6 +164,9 @@ data class AppActions(
     val firmware: () -> String = { "" },
     val onImportFirmware: (File) -> Unit = {},
     val onClearFirmware: () -> Unit = {},
+    // the file provider: the app's own folders are visible to the file managers (on by default)
+    val fileProvider: () -> Boolean = { true },
+    val onSetFileProvider: (Boolean) -> Unit = {},
 )
 
 /** The app's root: the guided setup until it is done, the main shell after */

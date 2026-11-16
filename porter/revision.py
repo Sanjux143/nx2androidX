@@ -8,5 +8,7 @@ drawer's Controls tab, so a pack's runtime has to be rebuilt for the motion to e
 gpuTurboSet/gpuTurboGet): the app calls them, so a pack's runtime has to be rebuilt for them to exist.
 5: the host gained the gamepad center's table and the release of every key (jni_android.c's padMapping/padReleaseAll):
 the app calls them, so a pack's runtime has to be rebuilt for the center to exist.
+6: the host gained the Android game mode (jni_android.c's perfGameMode): the app calls it on every resume, so a
+pack's runtime has to be rebuilt for the mode to reach the host.
 """
-PLAYER_API_REVISION = 5
+PLAYER_API_REVISION = 6

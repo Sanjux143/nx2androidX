@@ -21,6 +21,7 @@ class AdaptiveFrameRate(unittest.TestCase):
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,33 +32,41 @@ static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k
 #endif
 ''' + controller + r'''
 static int64_t mixed_work(int i) { return i % 64 < 48 ? 15000000 : 27000000; }
+// The policy's cache is refreshed every 30th call (the presenting thread reads the environment that often, not every frame):
+// the test sets the environment and then lets the cache catch up.
+static void policy_refresh(void) { for (int i = 0; i < 30; i++) game_mode_sync(); }
 int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "";
     int median = strcmp(mode, "median") == 0;
     unsetenv("DM_FPS_PIN"); unsetenv("DM_ADAPTIVE_FPS");
     if (median) setenv("DM_ADAPT_UP_PCT", "50", 1); else unsetenv("DM_ADAPT_UP_PCT");
+    game_mode_sync();   // presenting-frame policy initialization
     assert(dm_present_period_adapt(16666667) == 16666667);
     if (strcmp(mode, "pin") == 0) {
         // DM_FPS_PIN holds one step (the drawer's frame rate step sets it while the game runs):
         // work that would drop the rate leaves it where the pin puts it
         setenv("DM_FPS_PIN", "40", 1);
+        policy_refresh();
         g_step = 1; g_last_change = 0; g_last_up = 0; g_nwork = 64; g_nshown = 64; g_ok_frames = 0;
         for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
         adapt_frame(27000000, 6000000000ll);
         assert(g_step == 1);   // held at 40 fps, though the work says 30
         // a step the host does not know lets the rate adapt again (the variable is read every 30th frame)
         setenv("DM_FPS_PIN", "50", 1);
+        policy_refresh();
         g_step = 1; g_last_change = 0; g_nwork = 64; g_nshown = 64;
         for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
         for (int i = 0; i < 31; i++) adapt_frame(27000000, 6000000000ll);
         assert(g_step == 2);   // 30 fps: the work decides again
         // 0 releases the pin, and 60 holds the short step against the same work
         setenv("DM_FPS_PIN", "0", 1);
+        policy_refresh();
         g_step = 2; g_last_change = 0; g_nwork = 64; g_nshown = 64;
         for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
         for (int i = 0; i < 31; i++) adapt_frame(27000000, 6000000000ll);
         assert(g_step == 2);   // 30 fps: the pin released, the work keeps it there
         setenv("DM_FPS_PIN", "60", 1);
+        policy_refresh();
         g_step = 2; g_last_change = 0; g_nwork = 64; g_nshown = 64;
         for (int i = 0; i < 64; i++) { g_work_hist[i] = 27000000; g_late[i] = i < 7; }
         for (int i = 0; i < 31; i++) adapt_frame(27000000, 6000000000ll);
