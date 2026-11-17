@@ -15,7 +15,7 @@ The result is what the Gradle build takes as the app's assets:
     <out>/drivers/         the Vulkan driver the app ships (Mesa's Turnip), unpacked by the app itself
     <out>/manifest.json    what is in there and what it is for
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys, tarfile, urllib.request
+import argparse, hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tarfile, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -36,6 +36,8 @@ SKIP_SOURCES = {'DroidSansFallbackFull.ttf', 'OpenSans-Regular.ttf'}
 MODULES = ['lz4', 'capstone', 'pillow', 'fonttools', 'pyyaml', 'pycryptodome', 'backports.zstd']
 # The NuGet packages the C# tools need (nx_extract reads the NCAs): the phone restores them from its own folder.
 NUGET = [('LibHac', '0.19.0')]
+# A game profile folder (dm/games/<title ID>): the app does not carry the profiles (the player imports them)
+PROFILE_DIR = re.compile(r'^[0-9A-F]{16}$')
 
 
 def copy_tree(src: Path, dst: Path, skip=SKIP_DIRS):
@@ -43,6 +45,7 @@ def copy_tree(src: Path, dst: Path, skip=SKIP_DIRS):
     for p in sorted(src.rglob('*')):
         rel = p.relative_to(src)
         if any(part in skip for part in rel.parts): continue
+        if in_profile_dir(rel): continue   # the game profiles: the player imports them (porter profiles import), the app does not carry them
         if p.name in SKIP_FILES or p.name in SKIP_SOURCES or p.name.endswith(('.pyc', '.apk', '.dmsv', '.spv', '.pdb')): continue   # the debug symbols carry the build machine's paths
         target = dst / rel
         if p.is_dir():
@@ -55,6 +58,40 @@ def copy_tree(src: Path, dst: Path, skip=SKIP_DIRS):
             target.parent.mkdir(parents=True, exist_ok=True)
             link = os.readlink(p)
             if not target.exists(): target.symlink_to(link)
+
+
+def in_profile_dir(rel: Path):
+    """The path is inside a game profile folder (dm/games/<title ID>/): the profiles are not carried by the app.
+
+    The player imports them instead (porter profiles import): the profile folders are half a gigabyte of shader tables, and the app's
+    update would copy them again with every release. The tools that read a profile (game.py, the shader tools, the host build) find the
+    imported ones through DM_GAMES_DIR.
+    """
+    parts = rel.parts
+    if 'games' not in parts: return False
+    return bool(PROFILE_DIR.match(parts[parts.index('games') + 1])) if parts.index('games') + 1 < len(parts) else False
+
+
+def profiles_out(cache: Path):
+    """Where the game profiles package goes: beside the assets, not in them"""
+    d = cache / 'profiles'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cut_profiles(games: Path, out: Path):
+    """Cuts the game profiles package and returns (its manifest, the package's path).
+
+    The package is the app's second artifact: the app carries only the manifest (the package's name, its digest
+    and its revision), so the player can tell whether the package they imported is the one this build made.
+    """
+    spec = importlib.util.spec_from_file_location('profiles_zip', REPO / 'devtools/profiles_zip.py')
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    manifest, path = mod.cut(games, out / f'nx2a-profiles-r{mod.PROFILES_REVISION}-{mod.PROFILES_COMMIT[:8]}.zip')
+    mod.write_manifest(manifest, out / 'profiles.json')
+    print(f'   {manifest["count"]} game profile(s), {manifest["size"] / 2**20:.1f} MB, sha256 {manifest["sha256"][:16]}')
+    return manifest, path
 
 
 def nuget_packages(target: Path, cache: Path = None):
@@ -302,6 +339,15 @@ def main():
     # The Vulkan driver the app ships: a player has one without a network. The app unpacks it into its own folder
     # when it starts (the archive travels; the library does not).
     driver_archive(cache, out / 'drivers')
+
+    # The game profiles: the app does not carry them (half a gigabyte of shader tables), the player imports a
+    # package into their own folder. The package is cut here, beside the app that does not carry it, and the
+    # app carries only its manifest: the package's name, its digest and its revision. The player compares that
+    # with the receipt of what they imported, so the app can say whether there is a newer package - no version
+    # rule, no nagging.
+    print('>> the game profiles package')
+    profiles_manifest, profiles_zip = cut_profiles(REPO / 'nxnative/dm/games', profiles_out(cache))
+    (out / 'profiles.json').write_text(json.dumps(profiles_manifest, indent=2) + '\n')
 
     finalize_metadata(out)
 

@@ -79,11 +79,6 @@ internal fun needsTags(profile: GameProfile?, ported: Ported?): List<String> =
 internal fun experimentalTag(ported: Ported?): String? =
     if (ported?.status == "experimental") stringResource(R.string.lib_experimental) else null
 
-/** 旧版宿主编的数据包：要用当前版本重新移植（宿主的前端变了，老的宿主没有新的入口） */
-@Composable
-internal fun reportTag(ported: Ported?): String? =
-    if (ported?.needsRuntimeUpdate == true) stringResource(R.string.lib_needs_report) else null
-
 /** 清单里的显示版本（游戏自己的版本号，如 1.1.1）：老的数据包没有这一项，就不显示 */
 internal fun versionTag(ported: Ported?): String? =
     ported?.display?.trim()?.takeIf { it.isNotEmpty() }

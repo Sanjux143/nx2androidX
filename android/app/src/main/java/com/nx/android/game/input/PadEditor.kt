@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -40,8 +41,12 @@ import kotlin.math.roundToInt
  * - 拖动一个控件 = 移动它，松手就存进数据包的 settings.txt（没有「保存」按钮）
  * - 点一下一个控件（没拖动）= 弹它的大小对话框：名字、当前的大小、滑杆（0.5–2.0，步进 0.05）、
  *   [重置][取消][确定]。滑杆拖着的时候画面上就跟着变，确定才存，取消就恢复
+ * - 长按一个控件（按住不动）= 把它藏起来：对局里它不出现、那片触摸归游戏。
+ *   藏起来的键在编辑器里画成半透明的幽灵（虚线框 + 名字），点一下就回来
  * - 没有工具条、没有 −/+、没有网格、没有捏合、没有「放弃这些改动？」
  * - 右上角一个「完成」浮钮退出编辑
+ *
+ * 菜单键藏不掉（它是抽屉入口）。
  *
  * 改动的数据都在 PadView 那里（它画，也存盘）：这里只管手势与对话框。
  */
@@ -53,11 +58,13 @@ fun PadEditor(
     onSizePreview: (Int, Float) -> Unit,   // 大小对话框：拖着滑杆时的预览
     onSizeCommit: (Int, Float) -> Unit,    // 大小对话框：确定，存盘
     onSizeCancel: (Int) -> Unit,           // 大小对话框：取消，恢复
+    onLongPress: (Int) -> Unit,            // 长按一个控件：把它藏起来
+    onShow: (Int) -> Unit,                 // 点一下半透明的幽灵：把它找回来
     onDone: () -> Unit,                    // 退出编辑
 ) {
     var dialogCtl by remember { mutableIntStateOf(-1) }
     Box(Modifier.fillMaxSize()) {
-        // 触摸：拖动是移动，点按是改大小
+        // 触摸：拖动是移动，点按是改大小，长按是藏起来
         Box(
             Modifier.fillMaxSize().pointerInput(dialogCtl) {
                 if (dialogCtl >= 0) return@pointerInput   // 大小对话框开着：别抢它的触摸
@@ -73,23 +80,39 @@ fun PadEditor(
                     val offY = ctl.cy * H - down.position.y
                     val aspect = if (H > 0f) W / H else 1f
                     val slop = H * DRAG_SLOP
+                    val longPressMs = viewConfiguration.longPressTimeoutMillis
                     var moved = false
+                    var longPressed = false
                     var cx = ctl.cx
                     var cy = ctl.cy
+                    var last = down.uptimeMillis
                     while (true) {
-                        val ev = awaitPointerEvent()
+                        // 手指一直没动：等到了长按的时间就藏起来（动了就是拖动，不藏）
+                        val ev = if (moved || longPressed) awaitPointerEvent()
+                                 else withTimeoutOrNull((longPressMs - (last - down.uptimeMillis)).coerceAtLeast(1L)) { awaitPointerEvent() }
+                        if (ev == null) {
+                            longPressed = true
+                            onLongPress(c)
+                            continue
+                        }
                         val p = ev.changes.firstOrNull { it.pressed } ?: break   // 手指都抬起来了
+                        last = ev.changes.first().uptimeMillis
                         val dx = p.position.x - down.position.x
                         val dy = p.position.y - down.position.y
                         if (!moved && (dx * dx + dy * dy) > slop * slop) moved = true
-                        if (moved) {
+                        if (moved && !longPressed) {
                             cx = padDragPos((p.position.x + offX) / H, ctl.hw, aspect)
                             cy = padDragPos((p.position.y + offY) / H, ctl.hh, 1f)
                             onDrag(c, cx, cy)
                             ev.changes.forEach { it.consume() }
                         }
                     }
-                    if (moved) onDrop(c, cx, cy) else dialogCtl = c   // 没拖动：点一下就是改大小
+                    when {
+                        longPressed -> Unit          // 这次手势已经被长按吃掉了（藏起来了）
+                        moved -> onDrop(c, cx, cy)
+                        ctl.hidden -> onShow(c)      // 点一下幽灵：把它找回来
+                        else -> dialogCtl = c        // 点按：改大小
+                    }
                 }
             }
         )
@@ -166,13 +189,4 @@ private fun formatScale(v: Float): String {
 
 /** 控件的名字（对话框的标题用）：摇杆、十字键、菜单键，别的用它的标签 */
 @Composable
-fun padControlName(c: PadControl): String = when {
-    c.kind == "stick" -> stringResource(if (c.name == "stick_r") R.string.editor_ctl_stick_r else R.string.editor_ctl_stick_l)
-    c.kind == "dpad" -> stringResource(R.string.editor_ctl_dpad)
-    c.kind == "menu" -> stringResource(R.string.editor_ctl_menu)
-    c.name == "minus" -> stringResource(R.string.editor_ctl_minus)
-    c.name == "plus" -> stringResource(R.string.editor_ctl_plus)
-    c.name == "ls" -> "L3"
-    c.name == "rs" -> "R3"
-    else -> c.name.uppercase()
-}
+fun padControlName(c: PadControl): String = padControlLabel(c, LocalContext.current)

@@ -65,6 +65,7 @@
     <string name="runner_interpreter_patched">改写解释器路径完成</string>
     <string name="runner_interpreter_patch_failed">[RED] 改写解释器路径失败：%1$s</string>
     <string name="runner_exit_code">[RED] 退出 %1$s</string>
+    <string name="runner_cloud_folder">游戏文件在网盘目录里（%1$s）：没下载完整的文件会被读成一段一段，移植会当成文件损坏。请先把文件下载到手机本地存储，再重新发起移植。</string>
     <string name="runner_killed">[RED] 移植被信号 %1$s 杀死（多半是系统把内存收走了：清出内存再发起一次）</string>
     <string name="onb_step_of">第 %1$s 步，共 %2$s 步</string>
     <string name="onb_later">稍后再说</string>
@@ -306,7 +307,8 @@
     <string name="drawer_pad_reset_layout">恢复默认布局</string>
     <string name="editor_done">完成</string>
     <string name="editor_reset_layout">重置</string>
-    <string name="editor_hint">拖动控件移动位置；点一下改它的大小。</string>
+    <string name="editor_hint">拖动控件移动位置；点一下改它的大小；长按把它藏起来。</string>
+    <string name="editor_hidden_toast">已藏起%1$s · 点一下它的影子就能找回来</string>
     <string name="editor_ctl_stick_l">左摇杆</string>
     <string name="editor_ctl_stick_r">右摇杆</string>
     <string name="editor_ctl_dpad">十字键</string>
@@ -318,11 +320,14 @@
     <string name="game_no_game_to_run">没有要运行的游戏</string>
     <string name="game_cannot_load_host">无法载入游戏程序：%1$s</string>
     <string name="game_needs_report">请先在游戏库更新此游戏的运行库，再尝试运行。</string>
-    <string name="lib_needs_report">需要更新运行库</string>
     <string name="lib_report_again">重新移植</string>
     <string name="builds_start_title">开始一次移植</string>
     <string name="builds_start_hint">选择一个游戏文件开始移植；同目录的更新与 DLC 会自动带上。构建完成后它会在游戏库里出现。</string>
     <string name="builds_choose_game_file">选择游戏文件</string>
+    <string name="builds_profiles_ready">已有 %1$d 个游戏档案</string>
+    <string name="builds_profiles_ready_ported">已有 %1$d 个游戏档案，其中 %2$d 个已适配</string>
+    <string name="builds_profiles_missing">尚未导入游戏档案</string>
+    <string name="builds_profiles_import">去导入</string>
     <string name="builds_target">目标</string>
     <string name="builds_source">来源：%1$s</string>
     <string name="builds_options_title">构建选项</string>
@@ -342,6 +347,22 @@
     <string name="fw_imported">已导入 %1$s（%2$d 个文件）</string>
     <string name="fw_import_failed">固件导入失败：%1$s</string>
     <string name="fw_cleared">固件已清除</string>
+    <string name="profiles_title">游戏档案</string>
+    <string name="profiles_not_imported">没导入：还没移植的游戏需要档案</string>
+    <string name="profiles_imported">已导入 %1$d 个档案（%2$s）</string>
+    <string name="profiles_other_package">已导入 %1$d 个档案（%2$s），不是这个版本的档案包</string>
+    <string name="profiles_import">导入 zip</string>
+    <string name="profiles_import_again">再导入</string>
+    <string name="profiles_manage">处理</string>
+    <string name="profiles_update_title">在线更新</string>
+    <string name="profiles_update_hint">从这个版本的发布页下载档案包（约 90 MB）</string>
+    <string name="profiles_local_title">本地导入</string>
+    <string name="profiles_local_hint">从手机存储里选一个档案包（zip）</string>
+    <string name="profiles_downloading">下载中 %1$d%%</string>
+    <string name="profiles_update_failed">下载失败：%1$s</string>
+    <string name="profiles_pick">选游戏档案包（zip）</string>
+    <string name="profiles_imported_toast">已导入 %1$d 个游戏档案</string>
+    <string name="profiles_import_failed">档案导入失败：%1$s</string>
     <string name="builds_shared_font">系统字体</string>
     <string name="builds_shared_font_default">App 自带</string>
     <string name="builds_shared_font_short">字体 %1$s</string>
@@ -421,7 +442,7 @@
     <string name="lib_needs_status_boots">只能开机</string>
     <string name="lib_needs_status_experimental">实验性移植</string>
     <string name="lib_experimental">实验性移植</string>
-    <string name="lib_close_current_game">先退出当前游戏（%1$s）再运行这个</string>
+    <string name="lib_game_still_running">《%1$s》正在运行——它的画面已带回前台，没有启动新游戏</string>
     <string name="lib_empty_title">游戏库是空的</string>
     <string name="lib_empty_hint">去构建页选一个游戏文件，它会立刻出现在这里。</string>
     <string name="lib_view_builds">查看构建</string>
@@ -457,6 +478,11 @@
     <string name="lib_remove_item_pack_saves">数据包（含里面的存档）</string>
     <string name="lib_remove_item_workspace">构建工作区（解包出来的游戏）</string>
     <string name="lib_remove_item_partial">半成品数据包</string>
+    <string name="lib_remove_item_runtime">App 私有目录里的运行库</string>
+    <string name="lib_pin_shortcut">发送到桌面</string>
+    <string name="shortcut_added">已发送到桌面。</string>
+    <string name="shortcut_unsupported">这个设备的桌面不支持添加快捷方式。</string>
+    <string name="shortcut_disabled">这个游戏已不在游戏库里。</string>
     <string name="lib_remove_done">已从游戏库删除</string>
     <string name="lib_remove_cache_done">构建缓存已清除</string>
     <string name="lib_remove_workspace_unknown">已从游戏库删除（没找到构建工作区：文件名里没有 title ID）</string>
@@ -483,6 +509,32 @@
     <string name="lib_pack_busy_moving">这个游戏的数据包正在搬移——等搬完再动它</string>
     <string name="lib_pack_moved">数据包搬好了</string>
     <string name="lib_pack_move_failed">搬移没有完成：%1$s（包还在原来的位置）</string>
+    <string name="lib_pack_import_action">导入别人导出的数据包</string>
+    <string name="lib_pack_import_title">导入一个数据包？</string>
+    <string name="lib_pack_import_text">选一个别人导出的文件夹。游戏就在那个文件夹里原地运行：App 不会把它拷进自己的存储，那个文件夹还是你的。放在卡上都行，只是从那儿读游戏会慢一些。</string>
+    <string name="lib_pack_import_pick">选文件夹</string>
+    <string name="lib_pack_import_done">%1$s 已经进库了</string>
+    <string name="lib_pack_import_not_folder">那不是一个文件夹</string>
+    <string name="lib_pack_import_no_manifest">那个文件夹里没有数据包</string>
+    <string name="lib_pack_import_bad_id">那个数据包没有写明是哪个游戏</string>
+    <string name="lib_pack_import_no_romfs">那个文件夹里没有游戏文件</string>
+    <string name="lib_pack_import_already">那个文件夹已经在库里了</string>
+    <string name="lib_pack_import_failed">导入没有成功</string>
+    <string name="lib_pack_imported_badge">导入</string>
+    <string name="lib_pack_imported_hint">这个游戏是导入的：文件留在你选的那个文件夹里，App 只是记着它。</string>
+    <string name="lib_pack_imported_unreachable">现在够不着那个文件夹（卡没插？）</string>
+    <string name="lib_pack_export_action">把这个游戏导出成文件夹</string>
+    <string name="lib_pack_export_pick">导出到哪个文件夹？</string>
+    <string name="lib_pack_export_working">正在导出——卡上写入很慢，别拔卡</string>
+    <string name="lib_pack_export_progress">已导出 %1$s / %2$s</string>
+    <string name="lib_pack_export_done">导出到 %1$s</string>
+    <string name="lib_pack_export_failed">导出没有完成：%1$s</string>
+    <string name="lib_forget_action">把它移出游戏库</string>
+    <string name="lib_forget_confirm_title">把它移出游戏库？</string>
+    <string name="lib_forget_what">这个游戏从库里消失。那个文件夹不会被动：文件原样留在原地。</string>
+    <string name="lib_forget_path">文件夹：%1$s</string>
+    <string name="lib_forget_confirm_action">移出</string>
+    <string name="lib_forget_done">已移出游戏库（文件还在原地）</string>
     <string name="lib_section_language">语言</string>
     <string name="lib_no_saves">这个游戏还没有存档</string>
     <string name="lib_exported">已导出</string>
@@ -506,6 +558,8 @@
     <string name="storage_sd_card">SD 卡（%1$s）</string>
     <string name="storage_role_workspace">构建缓存</string>
     <string name="storage_role_pack">数据包</string>
+    <string name="storage_role_outside">App 之外的文件</string>
+    <string name="storage_outside_not_counted">不计入合计</string>
     <string name="storage_total">合计</string>
     <string name="storage_orphan">未登记的包与残留</string>
     <string name="storage_partial_value">至少 %1$s</string>
@@ -528,7 +582,9 @@
     <string name="update_up_to_date">已经是最新版本了。</string>
     <string name="update_failed">检查失败：没有网络，或者够不着 release 页。</string>
     <string name="update_download">去下载</string>
-    <string name="runtime_update">更新运行库</string>
+    <string name="runtime_rebuilding">正在重建这个游戏的运行库，大约需要 1 分钟。</string>
+    <string name="runtime_rebuild_hint">若重建运行库后游戏闪退或异常，请使用原始游戏文件重新移植。</string>
+    <string name="runtime_promoting">正在把这个包的运行库拷进 App 的私有目录。</string>
     <string name="runtime_update_failed">运行库更新失败。可重试，或在游戏详情里使用原始游戏文件重新移植；存档会保留。</string>
     <string name="runtime_play_failed">游戏未能正常运行。可在游戏详情中使用原始游戏文件完整重新移植；存档会保留。</string>
     <string name="runtime_busy">请先关闭正在运行的游戏，或等待当前构建完成。</string>
@@ -536,7 +592,6 @@
     <string name="runtime_updated">运行库已更新。若升级后游戏有问题，请在游戏详情里使用原始游戏文件重新移植。</string>
     <string name="runtime_update_hint">若升级后游戏有问题，请在游戏详情里使用原始游戏文件重新移植。</string>
     <string name="runtime_retry">重试</string>
-    <string name="runtime_profile_drift_hint">这个游戏上次移植用的档案在之后被改过。用当前档案重建等同于重新移植，但游戏的运行表现可能与移植时不同。</string>
     <string name="runtime_interrupted">运行库更新已中断。可重试，或在游戏详情里使用原始游戏文件重新移植；游戏数据会保留。</string>
 
     <!-- 手柄中心（实体手柄）：手柄中心面板与抽屉里的那一组 -->
@@ -592,4 +647,11 @@
     <string name="drawer_players_note">玩家 1 永远是手机：触屏的虚拟按键与体感都是它的，它再接手柄。默认「自动」——没被指派走的手柄都算玩家 1（单人游戏插两只手柄都能玩）。锁死某一只之后，别的就闲置了（按了没人管）。一只手柄只能属于一个玩家。</string>
     <string name="pad_center_player">玩家 %1$d</string>
     <string name="pad_center_idle">闲置</string>
+    <!-- 常见问题页 -->
+    <string name="faq_title">常见问题</string>
+    <string name="faq_empty">这一页的内容没读出来，重开一下 App 再看看。</string>
+    <string name="app_faq">常见问题</string>
+    <string name="faq_github_name">nx2androidX · GitHub</string>
+    <string name="faq_github_hint">开源仓库。解决不了的问题在这里开个 issue，把日志贴进去。</string>
+    <string name="faq_github_action">问题反馈</string>
 </resources>

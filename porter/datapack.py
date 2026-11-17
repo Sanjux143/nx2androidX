@@ -45,7 +45,7 @@ def romfs_sizes(d):   # {path in the RomFS: size} of the pack in d, '/'-separate
 
 
 def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', package=None, env=(), settings=None, files=None, text=None,
-          host=None, icon=None, drivers=None, profile_h=None, pack_base=None, romfs_at=None, progress=None):
+          host=None, icon=None, drivers=None, profile_h=None, no_lsfg=None, pack_base=None, romfs_at=None, progress=None):
     """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
     files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font; subfolders for the app's mode: host/, drivers/, overlay/, icon.png);
     text: {name in the pack: its text} (the launcher's lists: languages.txt, drivers.txt); host/icon/drivers: the app's artifacts, named in the manifest;
@@ -87,6 +87,7 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     if icon: man['icon'] = icon
     if drivers: man['drivers'] = list(drivers)
     if profile_h: man['profile_h'] = profile_h
+    if no_lsfg is not None: man['no_lsfg'] = bool(no_lsfg)   # the runtime build's lsfg switch: part of the build fingerprint
     if romfs_at: man['romfs_at'] = romfs_at   # the folder the RomFS is read from: the pack does not carry it, so the app checks that folder before the game runs
     man['player_api_revision'] = PLAYER_API_REVISION   # the runtime interface the pack was built against: the app rebuilds the runtime when its own revision differs
     (tmp / MANIFEST).write_text(json.dumps(man, indent=2), encoding='utf-8')

@@ -19,9 +19,9 @@ class LibraryLogicTest {
     fun `runtime updates block deletion and movement of their pack without source files`() {
         val path = "/ports/Game-data"
         assertEquals(GameCleanup.Outcome.BUSY_PORTING,
-            LibraryLogic.removalBlocked(true, path, null, false, "", "0100000000010000", packPath = path))
+            LibraryLogic.removalBlocked(true, path, null, "0100000000010000", packPath = path))
         assertEquals(GameCleanup.Outcome.BUSY_PORTING,
-            LibraryLogic.moveBlocked(true, path, null, false, "", "0100000000010000", false, packPath = path))
+            LibraryLogic.moveBlocked(true, path, null, "0100000000010000", false, packPath = path))
     }
 
     private fun tmpDir(): File = File.createTempFile("nx2a-port", "").let { f -> f.delete(); f.mkdirs(); f }
@@ -226,74 +226,72 @@ class LibraryLogicTest {
         assertTrue(LibraryLogic.sourceMatchesTitle("downloaded-game.nsp", "0100000000010000"))
     }
 
-    /** 正在构建 / 正在运行的游戏不能删，别的游戏能删 */
+    /** 正在构建的游戏不能删，别的游戏能删（库页可见时本来就没有游戏在跑） */
     @Test
-    fun `a game that is being ported or is running cannot be deleted`() {
+    fun `a game that is being ported cannot be deleted`() {
         val path = "/sdcard/Games/Game.nsp"
         assertEquals(GameCleanup.Outcome.BUSY_PORTING,
                      LibraryLogic.removalBlocked(portRunning = true, portGameFile = path, gamePath = path,
-                                                playerRunning = false, playerTitleId = "", titleId = "0100000000010000"))
-        assertEquals(GameCleanup.Outcome.BUSY_RUNNING,
-                     LibraryLogic.removalBlocked(portRunning = false, portGameFile = "", gamePath = path,
-                                                playerRunning = true, playerTitleId = "0100000000010000",
                                                 titleId = "0100000000010000"))
-        // 别的游戏在构建 / 在玩：这个游戏照样能删
+        // 别的游戏在构建：这个游戏照样能删
         assertEquals(null,
                      LibraryLogic.removalBlocked(portRunning = true, portGameFile = "/sdcard/Games/Other.nsp",
-                                                gamePath = path, playerRunning = true,
-                                                playerTitleId = "0100000000020000", titleId = "0100000000010000"))
+                                                gamePath = path, titleId = "0100000000010000"))
         // 什么都没在跑：能删
         assertEquals(null,
                      LibraryLogic.removalBlocked(portRunning = false, portGameFile = "", gamePath = path,
-                                                playerRunning = false, playerTitleId = "", titleId = "0100000000010000"))
+                                                titleId = "0100000000010000"))
     }
 
     /**
-     * 点「运行」的两种走法：这个游戏还活着就回到它（不重启），否则全新启动。
-     * 状态慢半拍（进程没了而状态还没清）与状态整个丢了（App 的进程被回收过）都要走全新启动。
+     * 门的两层决策（解析在外层）：账本里没游戏在跑 → 启动；跑的正是这一个 → 带回前台；
+     * 跑的是别的（含账本丢了身份的冷启动）→ 拒绝。进程的事不进决策：那是账本的唯一事实。
      */
     @Test
-    fun `the run button brings the running game back instead of starting it again`() {
-        assertEquals(RunAction.RESUME,
-                     LibraryLogic.runAction(running = true, runningTitleId = "0100000000010000",
-                                           portTitleId = "0100000000010000", processAlive = true))
+    fun `the gate starts a game when nothing runs`() {
+        assertEquals(LaunchDecision.START,
+                     LibraryLogic.launchDecision(running = false, runningTitleId = "",
+                                                requestedTitleId = "0100000000010000"))
     }
 
     @Test
-    fun `a game that is not running any more is started afresh`() {
-        // 进程没了（游戏刚结束，状态还没清）：回到前台会回到一个已经不在的页面
-        assertEquals(RunAction.START,
-                     LibraryLogic.runAction(running = true, runningTitleId = "0100000000010000",
-                                           portTitleId = "0100000000010000", processAlive = false))
-        // 别的游戏在跑：玩家点的这个要自己起来（先结束前一个）
-        assertEquals(RunAction.START,
-                     LibraryLogic.runAction(running = true, runningTitleId = "0100000000020000",
-                                           portTitleId = "0100000000010000", processAlive = true))
-        // 状态整个没了（App 的进程被回收重启过）
-        assertEquals(RunAction.START,
-                     LibraryLogic.runAction(running = false, runningTitleId = "",
-                                           portTitleId = "0100000000010000", processAlive = true))
+    fun `the gate brings the running game back when it is the one asked for`() {
+        assertEquals(LaunchDecision.RESUME,
+                     LibraryLogic.launchDecision(running = true, runningTitleId = "0100000000010000",
+                                                requestedTitleId = "0100000000010000"))
+        // title ID 大小写不敏感：卡上的 ID 与包清单里的写法一致才算同一个游戏
+        assertEquals(LaunchDecision.RESUME,
+                     LibraryLogic.launchDecision(running = true, runningTitleId = "0100000000010000",
+                                                requestedTitleId = "0100000000010000".lowercase()))
     }
 
-    /** 搬移：正在构建 / 正在运行 / 正在搬，都不能搬 */
+    @Test
+    fun `the gate refuses another game while one is running`() {
+        assertEquals(LaunchDecision.REFUSE,
+                     LibraryLogic.launchDecision(running = true, runningTitleId = "0100000000020000",
+                                                requestedTitleId = "0100000000010000"))
+    }
+
+    @Test
+    fun `a running game without a known identity refuses like any other game`() {
+        // 冷启动没读回身份（玩家刚升级 App）：任何启动请求都按「有别的游戏在跑」处理
+        assertEquals(LaunchDecision.REFUSE,
+                     LibraryLogic.launchDecision(running = true, runningTitleId = "",
+                                                requestedTitleId = "0100000000010000"))
+    }
+
+    /** 搬移：正在构建 / 正在搬，都不能搬 */
     @Test
     fun `a pack cannot be moved while the game is busy`() {
         val path = "/games/Game [0100000000010000].nsp"
         assertEquals(GameCleanup.Outcome.BUSY_MOVING,
                      LibraryLogic.moveBlocked(portRunning = false, portGameFile = "", gamePath = path,
-                                             playerRunning = false, playerTitleId = "",
-                                             titleId = "0100000000010000", moving = true))
+                                              titleId = "0100000000010000", moving = true))
         assertEquals(GameCleanup.Outcome.BUSY_PORTING,
                      LibraryLogic.moveBlocked(portRunning = true, portGameFile = path, gamePath = path,
-                                             playerRunning = false, playerTitleId = "",
-                                             titleId = "0100000000010000", moving = false))
-        assertEquals(GameCleanup.Outcome.BUSY_RUNNING,
-                     LibraryLogic.moveBlocked(portRunning = false, portGameFile = "", gamePath = path,
-                                             playerRunning = true, playerTitleId = "0100000000010000",
-                                             titleId = "0100000000010000", moving = false))
+                                              titleId = "0100000000010000", moving = false))
         assertNull(
             LibraryLogic.moveBlocked(portRunning = false, portGameFile = "", gamePath = path,
-                                     playerRunning = false, playerTitleId = "",
                                      titleId = "0100000000010000", moving = false))
     }
 }

@@ -1,5 +1,6 @@
 package com.nx.android.game
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.hardware.input.InputManager
@@ -8,9 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.annotation.SuppressLint
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -27,20 +25,22 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -52,33 +52,44 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.nx.android.NxApp
 import com.nx.android.R
+import com.nx.android.core.ui.ProvideAppLocale
+import com.nx.android.core.ui.theme.NxPalette
+import com.nx.android.core.ui.theme.NxTheme
 import com.nx.android.data.AppLocale
+import com.nx.android.data.AppLog
 import com.nx.android.data.FrameGenSettings
 import com.nx.android.data.LosslessDll
 import com.nx.android.data.MotionKnobs
 import com.nx.android.data.MotionSettings
 import com.nx.android.data.PadPlayers
 import com.nx.android.data.PrefsStore
-import com.nx.android.data.hasGyroscope
 import com.nx.android.data.RatePin
 import com.nx.android.data.RateSettings
 import com.nx.android.data.drivers.Drivers
+import com.nx.android.data.hasGyroscope
 import com.nx.android.data.playback.PackEnvStore
+import com.nx.android.game.GameActivity.Companion.prepareScope
 import com.nx.android.game.hud.HudField
-import com.nx.android.core.ui.ProvideAppLocale
-import com.nx.android.game.overlay.GameDrawer
 import com.nx.android.game.hud.HudOverlay
 import com.nx.android.game.input.PadEditor
 import com.nx.android.game.input.PadView
+import com.nx.android.game.overlay.GameDrawer
 import com.nx.android.game.overlay.TextPrompt
-import com.nx.android.core.ui.theme.NxTheme
 import com.nx.android.input.GamepadScan
-import com.nx.android.input.PadCalibration
 import com.nx.android.input.PadAssignment
+import com.nx.android.input.PadCalibration
 import com.nx.android.input.PadProfileStore
-import com.nx.android.input.ui.PadCenterController
 import com.nx.android.input.PadSpec
+import com.nx.android.input.ui.PadCenterController
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import javax.inject.Inject
 
 /**
  * 音量键归 Android：游戏的音频走媒体音量组（AAUDIO_USAGE_GAME），系统拿不到这些键就永远调不了音量
@@ -89,40 +100,43 @@ internal fun forwardsKeyToGame(keyCode: Int): Boolean =
         keyCode != KeyEvent.KEYCODE_VOLUME_DOWN &&
         keyCode != KeyEvent.KEYCODE_VOLUME_MUTE
 
+/** 游戏页的准备阶段（Loading 页的状态）：进程级的，页面重建时新实例读到的是同一份 */
+internal enum class PreparePhase { IDLE, RUNNING, READY, FAILED }
+
 /**
- * One game in this process (":play"): the host (libdmplay.so, the copy the library made in the app's private
- * folder) is loaded here and started with the pack folder, the SurfaceView's surface goes to the host's Vulkan
- * swapchain and every input event is forwarded as the snapshot the shared core reads (jni_android.h). The
- * drawer (Compose, over the surface) holds the game's live switches — the frame generation among them; Back
- * stays with the game's own pause menu. The host ends the process when the game ends (one game per process),
- * and [endProcess] kills it too — a started host cannot be started again in the same process, so a recreated
- * activity of a running game only re-hands its window ([hostRunning]).
+ * One game in this process (":play"): the launch lands here first as a Loading page, and a prepare of
+ * the process's own ([prepareScope], outliving any activity instance) brings the host in — the fingerprint
+ * is checked against the pack, a stale runtime is rebuilt by a porter subprocess right here, and the host
+ * is copied into the app's private folder. Only when that is done does the page load the host
+ * ([System.load]), build the game UI (the SurfaceView last: its surfaceCreated must not fire before the
+ * host is in) and start it ([Native.start]). The drawer (Compose, over the surface) holds the game's live
+ * switches — the frame generation among them; Back stays with the game's own pause menu once the game is
+ * up. The host ends the process when the game ends (one game per process), and [endProcess] kills it too —
+ * a started host cannot be started again in the same process, so a recreated activity of a running game
+ * only re-hands its window ([hostRunning]).
  */
+@AndroidEntryPoint
 class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     companion object {
         const val EXTRA_PACK = "pack"          // the data pack folder (the port's output, shared storage)
-        const val EXTRA_HOST = "host"          // the game's libdmplay.so in the app's private folder
         const val EXTRA_TITLE_ID = "title_id"  // keeps the saves, the temp and the log apart per game
         const val EXTRA_NAME = "name"
-        const val EXTRA_EXIT = "exit"
 
         /** a start already happened in this process: a recreated activity takes the running game's window over */
         @Volatile var hostRunning = false
 
-        /**
-         * ends a running game from the app side (the intent lands in onNewIntent).
-         *
-         * CLEAR_TOP|SINGLE_TOP：命中任务里**已有的**那一个游戏页，把它上面的 finish 掉。**不能**用
-         * FLAG_ACTIVITY_NEW_TASK——那会让系统按 affinity 另找位置，目标不在栈顶时**新建**一个游戏页
-         * 实例；新实例在 onCreate 里撞上 hostRunning 直接早退，结果是一个不接管窗口、没有输入的黑屏。
-         */
-        fun stop(activity: Activity) {
-            val i = Intent(activity, GameActivity::class.java)
-                .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(EXTRA_EXIT, true)
-            activity.startActivity(i)
-        }
+        /** the prepare runs on the process's own scope: an activity recreation does not kill it, and does not re-run it */
+        private val prepareScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        private var prepareJob: Job? = null
+
+        // ---- the prepare's states, process-level: the Loading page of whichever instance is current reads these ----
+        internal var preparePhase by mutableStateOf(PreparePhase.IDLE); private set
+        internal var prepareStep by mutableStateOf("")       // what the prepare is doing right now (the porter's line)
+        internal var prepareReason by mutableStateOf("")     // the failure's own reason (why the rebuild stopped)
+        @Volatile private var preparedHostPath = ""          // where the prepared host landed (READY)
+        @Volatile private var startClaimed = false           // exactly one instance turns a READY prepare into a game
+        private var currentInstance = java.lang.ref.WeakReference<GameActivity?>(null)
 
         /** the game again (back from the app): the running page comes to the front, no new one is made */
         fun resume(activity: Activity) {
@@ -130,6 +144,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 Intent(activity, GameActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
         }
     }
+
+    @Inject lateinit var compiler: com.nx.android.data.RuntimeCompiler
+    @Inject lateinit var runtimeStorage: com.nx.android.data.RuntimeStorage
 
     /** 界面语言：toast 与抽屉里的词从这里取 */
     private val locale: AppLocale get() = (application as NxApp).locale
@@ -141,6 +158,11 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var motionSettings: MotionSettings? = null
     private var padPlayers: PadPlayers? = null
     private var packPath: String? = null
+    private var packTitleId: String? = null
+    private var packName: String = ""
+
+    /** the game UI (surface, pad, drawer) is in the view tree: the native calls and the input paths are live */
+    private var gameUiReady = false
     private lateinit var padView: PadView
 
     // 性能 HUD：两条线与它显示哪些字段（App 的偏好，重启后仍在）
@@ -256,50 +278,198 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val frame = FrameLayout(this)
-        val surface = SurfaceView(this)
-        surface.holder.addCallback(this)
-        frame.addView(surface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        // 外接屏接管时盖住手机上的那块画面（宿主不再往它画，留在那里的是旧的一帧）
-        screenBlank = View(this).apply { setBackgroundColor(android.graphics.Color.BLACK); visibility = View.GONE }
-        frame.addView(screenBlank, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        // 虚拟手柄绘制层（android-virtual-pad）：画在游戏画面之上、抽屉之下；不消费触点——命中与分流在宿主
+        currentInstance = java.lang.ref.WeakReference(this)
         packPath = intent.getStringExtra(EXTRA_PACK)
-        val titleId = intent.getStringExtra(EXTRA_TITLE_ID)?.ifEmpty { null }
-        padView = PadView(this, PrefsStore(this), packPath?.let { java.io.File(it) }, titleId)
-        padView.onMenuTapped = { runOnUiThread { drawerOpen = !drawerOpen } }   // ☰ 按钮：App 开自己的抽屉
-        frame.addView(padView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        // the drawer's layer: a ComposeView over the game's surface (the composition needs the activity's owners on the view)
-        val compose = ComposeView(this)
-        compose.setViewTreeLifecycleOwner(this)
-        compose.setViewTreeViewModelStoreOwner(this)
-        compose.setViewTreeSavedStateRegistryOwner(this)
-        compose.setContent { NxTheme { ProvideAppLocale(locale) { DrawerRoot() } } }
-        frame.addView(compose, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        setContentView(frame)
+        packTitleId = intent.getStringExtra(EXTRA_TITLE_ID)?.ifEmpty { null }
+        packName = intent.getStringExtra(EXTRA_NAME) ?: ""
         immersive()
-        if (hostRunning) { setupExternalDisplay(); return }   // a recreation (the system rebuilt the activity): the running game takes the new window in surfaceCreated
-        if (intent.getBooleanExtra(EXTRA_EXIT, false)) return endProcess()
-        val pack = intent.getStringExtra(EXTRA_PACK)
-        val host = intent.getStringExtra(EXTRA_HOST)
-        if (pack.isNullOrEmpty() || host.isNullOrEmpty()) { toast(locale.str(R.string.game_no_game_to_run)); endProcess(); return }
-        if (com.nx.android.data.library.LibraryFileScanner.portFromPack(java.io.File(pack))?.runnable != true) {
-            toast(locale.str(R.string.game_needs_report))
-            endProcess()
+        if (hostRunning) { installGameUi(); setupExternalDisplay(); return }   // a recreation (the system rebuilt the activity): the running game takes the new window in surfaceCreated
+        // 没带包的一条（resume 的自愈）：这个进程里没有正在跑的游戏，也没有准备在进行——
+        // 它是「从不杀」模型下的清道夫，把幽灵进程收掉。
+        if (packPath.isNullOrEmpty()) {
+            toast(locale.str(R.string.game_no_game_to_run)); endProcess(); return
+        }
+        // 上一份准备已经就绪（页面在准备期被重建、又或上一个实例没了）：这份实例直接接手开跑
+        if (preparePhase == PreparePhase.READY && !startClaimed && preparedHostPath.isNotEmpty()) {
+            startClaimed = true
+            startGame(preparedHostPath)
             return
         }
+        // 出生即 Loading：Back 被接管，游戏 UI（SurfaceView/手柄/抽屉）一概不进视图树——
+        // surfaceCreated 若早于 System.load 会抛 UnsatisfiedLinkError。准备在进程级的协程里做，
+        // 页面重建时不重跑（新实例只接管 Loading 界面）。
+        showLoading()
+        startPrepare()
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    // ---- 出生即 Loading：准备期的唯一画面（进行中 / 失败，成功后整个被游戏 UI 换掉）----
+
+    private fun showLoading() {
+        gameUiReady = false
+        val loading = ComposeView(this)
+        loading.setViewTreeLifecycleOwner(this)
+        loading.setViewTreeViewModelStoreOwner(this)
+        loading.setViewTreeSavedStateRegistryOwner(this)
+        loading.setContent { NxTheme { ProvideAppLocale(locale) { LoadingPage() } } }
+        setContentView(loading)
+    }
+
+    @androidx.compose.runtime.Composable
+    private fun LoadingPage() {
+        val name = packName
+        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+            Column(
+                Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (name.isNotBlank()) {
+                    Text(name, color = Color.White,
+                         style = androidx.compose.material3.MaterialTheme.typography.titleLarge,
+                         maxLines = 1)
+                    Spacer(Modifier.height(18.dp))
+                }
+                when (preparePhase) {
+                    PreparePhase.RUNNING -> {
+                        androidx.compose.material3.CircularProgressIndicator(color = NxPalette.Cream)
+                        Spacer(Modifier.height(14.dp))
+                        Text(stringResource(R.string.runtime_rebuilding), color = Color.White.copy(alpha = 0.75f),
+                             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
+                        // 进度来自同进程读 porter 子进程的 stdout：它说到哪儿了，这里就写到哪儿
+                        if (prepareStep.isNotBlank()) Text(prepareStep, color = Color.White.copy(alpha = 0.5f),
+                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall, maxLines = 2)
+                        Spacer(Modifier.height(10.dp))
+                        Text(stringResource(R.string.runtime_rebuild_hint), color = Color.White.copy(alpha = 0.5f),
+                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
+                    PreparePhase.FAILED -> {
+                        Text(prepareReason.ifBlank { stringResource(R.string.runtime_update_failed) },
+                             color = Color.White, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Spacer(Modifier.height(22.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            androidx.compose.material3.Button(onClick = { startPrepare() }) {   // 重试：重新判断一次并再准备
+                                Text(stringResource(R.string.runtime_retry))
+                            }
+                            androidx.compose.material3.Button(onClick = { endProcess() }) {
+                                Text(stringResource(R.string.drawer_exit))
+                            }
+                        }
+                    }
+                    PreparePhase.READY, PreparePhase.IDLE -> {}
+                }
+            }
+        }
+    }
+
+    // ---- 准备：指纹检查 →（对不上就地重建）→ 拷进私有目录；全程在进程级协程里 ----
+
+    private fun startPrepare() {
+        if (prepareJob?.isActive == true) return   // 页面重建：协程还在，新实例只接管 Loading 界面
+        val pack = packPath ?: return
+        startClaimed = false
+        preparePhase = PreparePhase.RUNNING
+        prepareStep = ""
+        prepareReason = ""
+        prepareJob = prepareScope.launch {
+            val outcome = prepareRuntime(java.io.File(pack))
+            withContext(Dispatchers.Main) {
+                if (outcome.ok) {
+                    // 成功：Loading 收起。由「当下活着的那份实例」开跑（重建期间的新实例接手）
+                    preparedHostPath = outcome.hostPath
+                    val driver = currentInstance.get()
+                    if (driver != null && !startClaimed) {
+                        startClaimed = true
+                        driver.startGame(outcome.hostPath)
+                    } else preparePhase = PreparePhase.READY   // 没有活着的实例：下一次 onCreate 接手
+                } else {
+                    preparePhase = PreparePhase.FAILED
+                    prepareReason = outcome.reason
+                }
+            }
+        }
+    }
+
+    private data class PrepareOutcome(val ok: Boolean = false, val hostPath: String = "", val reason: String = "")
+
+    private suspend fun prepareRuntime(pack: java.io.File): PrepareOutcome {
+        val ported = com.nx.android.data.library.LibraryFileScanner.portFromPack(pack)
+            ?: return PrepareOutcome(reason = locale.str(R.string.main_cannot_run_not_a_pack, pack.name))
+        val dir = runtimeStorage.dir(ported.titleId)
+        // 旧格式的包（清单带 host，运行库在包里）：目录里那份对得上就直接用（旧包也能零拷贝）；
+        // 包能跑而目录没有（或对不上）→ 晋升拷贝；包跑不了（接口对不上、宿主没了）→ 就地重建。
+        if (ported.hostDeclared) {
+            if (ported.runnable) {
+                if (runtimeStorage.complete(dir) && runtimeStorage.matches(ported, runtimeStorage.readMarker(dir))) {
+                    return PrepareOutcome(ok = true, hostPath = runtimeStorage.hostOf(dir).absolutePath)
+                }
+                try {
+                    prepareStep = locale.str(R.string.runtime_promoting)
+                    withContext(Dispatchers.IO) {
+                        com.nx.android.data.RuntimeLibraries.copyForLaunch(ported, dir)
+                    }
+                    // 拷完由 App 写入构建标记（否则下次启动无从判版本）。旧包的清单没有记 lsfg，
+                    // 晋升出来的运行库标记里就留着这一项不参与比对。
+                    runtimeStorage.writeMarker(dir, com.nx.android.domain.RuntimeBuildMarker(
+                        playerApiRevision = ported.playerApiRevision, profileH = ported.profileH, noLsfg = null))
+                } catch (e: Exception) {
+                    return PrepareOutcome(reason = e.message.orEmpty().ifBlank { e.javaClass.simpleName })
+                }
+                if (!runtimeStorage.complete(dir)) {
+                    return PrepareOutcome(reason = locale.str(R.string.main_cannot_run_no_host, pack.name))
+                }
+                return PrepareOutcome(ok = true, hostPath = runtimeStorage.hostOf(dir).absolutePath)
+            }
+            rebuild(pack)?.let { return it }
+        } else {
+            // 新格式：运行库是统一目录里的正本，标记在、指纹对得上就零拷贝加载；对不上（app 升级让
+            // 接口版本变了、标记没了、档案换了）就地重建——重建把运行库写回目录，启动判断只读目录侧。
+            if (runtimeStorage.complete(dir) && runtimeStorage.matches(ported, runtimeStorage.readMarker(dir))) {
+                return PrepareOutcome(ok = true, hostPath = runtimeStorage.hostOf(dir).absolutePath)
+            }
+            rebuild(pack)?.let { return it }
+        }
+        // 重建之后（或目录里已就位的那份）：清单与标记都核对过了，这里只认目录
+        val fresh = com.nx.android.data.library.LibraryFileScanner.portFromPack(pack) ?: ported
+        val freshMarker = runtimeStorage.readMarker(ported.titleId)
+        if (!runtimeStorage.complete(dir) || !runtimeStorage.matches(fresh, freshMarker)) {
+            return PrepareOutcome(reason = locale.str(R.string.game_needs_report))
+        }
+        return PrepareOutcome(ok = true, hostPath = runtimeStorage.hostOf(dir).absolutePath)
+    }
+
+    /** 就地重建（porter 子进程，stdout 读进来就是 Loading 的进度）；成功返回 null，失败返回原因 */
+    private suspend fun rebuild(pack: java.io.File): PrepareOutcome? {
+        val result = compiler.rebuild(pack.absolutePath) { line ->
+            prepareStep = line
+            AppLog.line(line)
+        }
+        if (!result.success) return PrepareOutcome(reason = result.reason)
+        return null
+    }
+
+    // ---- 开跑：加载宿主 → 游戏进视图树 → Native.start（全部在主线程上，SurfaceView 最后进）----
+
+    private fun startGame(host: String) {
+        preparePhase = PreparePhase.IDLE
         try {
             System.load(host)
         } catch (t: Throwable) {
-            toast(locale.str(R.string.game_cannot_load_host, t.message) + "\n" + locale.str(R.string.runtime_play_failed))
-            endProcess()
+            preparePhase = PreparePhase.FAILED
+            prepareReason = locale.str(R.string.game_cannot_load_host, t.message)
+            showLoading()
             return
         }
+        installGameUi()
+        val pack = packPath ?: return endProcess()
+        val titleId = packTitleId
         // the title id keeps this game's saves, temp and log apart from the others' (host_start_common)
         fgSettings = titleId?.let { FrameGenSettings(PrefsStore(this), it) }
         rateSettings = titleId?.let { RateSettings(PrefsStore(this), it) }
         motionSettings = titleId?.let { MotionSettings(PrefsStore(this), it) }
-        padPlayers = titleId?.let { PadPlayers(this, it) }
+        padPlayers = PadPlayers(this, PadPlayers.GLOBAL)   // 谁玩谁是全局一份（手柄中心与这里读写同一份）
         // 手柄的档案（每只手柄一份）与手柄的枚举：中心靠它
         loadPadProfiles()
         GamepadScan.start(this)
@@ -333,7 +503,30 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         watchControllers()
     }
 
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    /** 游戏的视图树：SurfaceView + 外接屏遮罩 + 手柄层 + 抽屉（准备完成才建——见类注释） */
+    private fun installGameUi() {
+        val frame = FrameLayout(this)
+        val surface = SurfaceView(this)
+        surface.holder.addCallback(this)
+        frame.addView(surface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // 外接屏接管时盖住手机上的那块画面（宿主不再往它画，留在那里的是旧的一帧）
+        screenBlank = View(this).apply { setBackgroundColor(android.graphics.Color.BLACK); visibility = View.GONE }
+        frame.addView(screenBlank, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // 虚拟手柄绘制层（android-virtual-pad）：画在游戏画面之上、抽屉之下；不消费触点——命中与分流在宿主
+        padView = PadView(this, PrefsStore(this), packPath?.let { java.io.File(it) }, packTitleId)
+        padView.onMenuTapped = { runOnUiThread { drawerOpen = !drawerOpen } }   // ☰ 按钮：App 开自己的抽屉
+        frame.addView(padView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // the drawer's layer: a ComposeView over the game's surface (the composition needs the activity's owners on the view)
+        val compose = ComposeView(this)
+        compose.setViewTreeLifecycleOwner(this)
+        compose.setViewTreeViewModelStoreOwner(this)
+        compose.setViewTreeSavedStateRegistryOwner(this)
+        compose.setContent { NxTheme { ProvideAppLocale(locale) { DrawerRoot() } } }
+        frame.addView(compose, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        setContentView(frame)
+        immersive()
+        gameUiReady = true
+    }
 
     // ---- 外接屏：游戏到大屏上，手机当手柄 ----
 
@@ -562,6 +755,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                     onSizePreview = { c, s -> padView.previewSize(c, s) },
                     onSizeCommit = { c, s -> padView.commitSize(c, s) },
                     onSizeCancel = { c -> padView.cancelPreview(c) },
+                    onLongPress = { c -> padView.hideControl(c) },   // 长按：把它藏起来
+                    onShow = { c -> padView.showControl(c) },        // 点一下幽灵：把它找回来
                     onDone = { closeEditor() },
                 )
             }
@@ -583,12 +778,14 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     // ---- input: the touches are the app's now (it works out what they hit); the keys go to the host ----
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (!gameUiReady) return true   // Loading 期：还没有手柄，触摸就地吃掉
         if (editorOpen) return true   // 编辑器开着：触摸归编辑器
         padView.onTouch(e)
         return true
     }
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        if (!gameUiReady) return super.onGenericMotionEvent(e)   // Loading 期：宿主还没载入，别碰它
         noteController(e.source, e.deviceId)   // 手柄动了：它算「在用」，虚拟手柄让位
         Native.motion(e.source, e.deviceId, e.action, IntArray(0), FloatArray(0), FloatArray(0), axes(e))
         return true
@@ -609,6 +806,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
      */
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (!gameUiReady) {   // Loading 期：Back 接管（不可返回），其余按键也没有去处（宿主还没载入）
+            return forwardsKeyToGame(e.keyCode)
+        }
         if (!forwardsKeyToGame(e.keyCode)) return false   // 音量键：系统的事，游戏与宿主都不沾
         if (e.keyCode == KeyEvent.KEYCODE_BACK) {
             if (e.action == KeyEvent.ACTION_DOWN) {
@@ -648,6 +848,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     // ---- lifecycle: the same dance as the NativeActivity's callbacks ----
     override fun onResume() {
         super.onResume()
+        if (!gameUiReady) return   // Loading 期：宿主与手柄都还没就位
         Native.lifecycle(1)
         padView.fetchLayout()
         // 玩家可能刚在首页改过手柄的档案：重读一遍，再推给宿主
@@ -688,11 +889,11 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         super.onConfigurationChanged(newConfig)
         locale.configurationChanged()
     }
-    override fun onPause() { super.onPause(); Native.lifecycle(0) }
+    override fun onPause() { super.onPause(); if (gameUiReady) Native.lifecycle(0) }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) immersive()
-        Native.lifecycle(if (hasFocus) 2 else 3)
+        if (gameUiReady) Native.lifecycle(if (hasFocus) 2 else 3)
     }
 
     override fun onDestroy() {
@@ -702,10 +903,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         super.onDestroy()
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_EXIT, false)) endProcess()
-    }
 
     /**
      * 这一页没了，进程也走：宿主在一个进程里只能跑一次（见类注释）。

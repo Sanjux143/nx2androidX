@@ -2,6 +2,7 @@ package com.nx.android.core.ui.components
 
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,11 +10,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Button
@@ -30,6 +33,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -122,6 +126,22 @@ fun Hint(text: String, modifier: Modifier = Modifier, size: TextUnit = 12.sp) {
         fontSize = size,
         modifier = modifier,
     )
+}
+
+/** A page's way out: a cross in a round button */
+@Composable
+fun CloseIcon(onClick: () -> Unit) {
+    Box(
+        Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick).padding(10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.Close,
+            stringResource(R.string.common_close),
+            Modifier.size(22.dp),
+            tint = MaterialTheme.colorScheme.onBackground,
+        )
+    }
 }
 
 /** The pages' scroll states, saveable across the tab switches (a hidden page's composition goes away; the scroll position must not) */

@@ -7,7 +7,7 @@ import hashlib, importlib.util, json, mmap, os, re, shutil, socket, struct, subp
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, product_cache, profiles, romfs_pack, toolchain
+from porter import config, datapack, dumps, fpslocker, install, paths, product_cache, profiles, profiles_layer, romfs_pack, toolchain
 from porter.revision import PLAYER_API_REVISION
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
@@ -38,6 +38,7 @@ class Options:
     out: Path = None                   # where the APK and the data pack go (default: the game folder)
     version: str = ''                  # v<N> to pack (default: the newest in the folder)
     language: str = ''                 # a code or a name (default: English)
+    language_preferred: str = ''       # the language the device is set to: the pack follows it when the game has it (a wish, not a demand)
     app_name: str = ''                 # the launcher label (default: the game's name in its control data)
     app: bool = False                  # the nx2android app's mode: no APK and no install — the pack carries the host (libdmplay.so), the drivers and the icon; the app runs the game itself
     install: bool = False              # install on the device after packing
@@ -158,6 +159,26 @@ def alias_headroom(tsv, gb=None):
     lines.insert(min(rows['mem_alias'], rows['mem_reserve']), f'# porter: {add >> 30} GB more alias region than the tested build\'s ({alias:#x}), and the block with it, for this build\'s address regions')
     tsv.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return alias, alias + add
+
+
+def pick_language(asked, preferred, have):
+    """The language to pack: the one that was asked for (--language / the settings: a demand, the build stops when the game lacks it), else the phone's own language when the game has
+    it (a wish: the port never fails for it), else the game's first language. have: the game's languages (empty: unknown).
+    → (code, notes): the notes say what became of a wish that went nowhere, so the player sees why the phone's language did not follow"""
+    notes = []
+    if asked:
+        want = nsp.language_code(asked)
+        if not want: raise BuildError(f'unknown game language {asked!r}')
+        return nsp.game_language(want, True, have), notes
+    want = nsp.language_code(preferred) if preferred else None
+    if not want:
+        lang = nsp.game_language('en-US', False, have)
+        if preferred: notes.append(f"the phone's language {preferred!r} is not a language code the porter knows: the pack keeps {lang}")
+        return lang, notes
+    lang = nsp.game_language(want, False, have)
+    if have and want not in have and nsp.LANG_NEAR.get(want) not in have:
+        notes.append(f'the game has no {want} ({dict(nacp.LANGUAGES)[want]}): the pack keeps {lang}')
+    return lang, notes
 
 
 def registered_patches():
@@ -384,6 +405,9 @@ class Port:
         os.environ['DOTNET_ROOT'] = str(toolchain.dotnet_root(self.tools['dotnet']))   # where nx_extract.exe's apphost looks for the runtime (else the system's, which may lack .NET 10)
         # PYTHONUTF8: the engine's tools write their tables with open() and no encoding, which is the ANSI code page on Windows (shader_split.py's "→" failed)
         self.env = dict(os.environ, J=str(o.jobs), PYTHONIOENCODING='utf-8', PYTHONUTF8='1', DOTNET_CLI_TELEMETRY_OPTOUT='1')
+        # The player's own game profiles (the package they imported) join DM_GAMES_DIR: game.py finds them there, and so does every tool the
+        # port starts (the shader tools, the host build), which take the variable from this environment.
+        profiles_layer.activate(self.env)
         # The build tools' own libraries (the toolchain's libshaderc for glslc): the tools are run with the environment the
         # guest has, whose library path holds the rootfs's libraries only, and the tools' own RPATH may point elsewhere
         if tc := Path(os.environ.get('NX2A_REPO', '')) / 'toolchain':
@@ -579,11 +603,13 @@ class Port:
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
         self.display = nacp.version(self.game / 'control.nacp') or nacp.version(self.base / 'control.nacp') or '1.0'
         lang_in = o.language or self.cfg.get('language')
-        want = nsp.language_code(lang_in) if lang_in else 'en-US'
-        if not want: raise BuildError(f'unknown game language {lang_in!r}')
+        # The language the phone is set to is a wish, not a demand: the pack follows it when the game has it, and the
+        # port never fails for it (a Chinese phone and a Chinese game: without this the pack fell back to the game's
+        # first language, which is Korean in the Asian releases)
         have = nacp.languages(self.game / 'control.nacp') or nacp.languages(self.base / 'control.nacp')
         self.langs = have or ['en-US']
-        self.lang = nsp.game_language(want, bool(lang_in), have)
+        self.lang, notes = pick_language(lang_in, o.language_preferred, have)
+        for n in notes: say(n)
         say(f'app: {self.app_name} {self.display} ({self.package}), game language {self.lang}')
 
     def mem_profile(self):
@@ -1133,16 +1159,54 @@ class Port:
             # With the RomFS compressed (android.tsv romfs zstd) it points at the packed folder in the build workspace, which is where the packer wrote it.
             if romfs.is_dir():
                 romfs_at, romfs = str(romfs), None
-            host = 'host/libdmplay.so'
-            files[host] = self.so
+            # The runtime does not go into the pack when the app gave a runtimes folder (NX2A_RUNTIMES):
+            # the host and the loader's hooks go to the app's private folder instead, one folder per title
+            # ID (the build options are compiled into the host, so every game carries its own), with the
+            # build marker (build.json) beside them. The pack keeps the game's data and the icon and the
+            # gamepad's theme; a manifest without a 'host' key reads as this layout. Without the folder
+            # (the desktop tool, the upstream engine) the runtime stays in the pack, as before.
+            runtimes = os.environ.get('NX2A_RUNTIMES', '').strip()
+            if runtimes:
+                from porter.runtime_update import build_marker, write_marker
+                target = Path(runtimes) / self.g.id.lower()
+
+                def copy_into(src, name):
+                    # 拷贝语义（原子写）：宿主、钩子与驱动在构建树/工具树里还有正本，
+                    # 移走会让之后的移植与重建找不到它们。
+                    target.mkdir(parents=True, exist_ok=True)
+                    pending = target / (name + '.part')
+                    with src.open('rb') as f, pending.open('wb') as dst:
+                        shutil.copyfileobj(f, dst)
+                        dst.flush()
+                        os.fsync(dst.fileno())
+                    os.replace(pending, target / name)
+
+                copy_into(self.so, 'libdmplay.so')
+                for lib in self.loader_libs():   # the loader's four hooks, the only managed parts beside the host
+                    copy_into(lib, lib.name)
+                if self.o.vulkan_driver:   # a driver the player picked for this port loads from the same folder
+                    copy_into(self.o.vulkan_driver, driver_lib_name(self.o.vulkan_driver))
+                write_marker(target / 'build.json', build_marker(getattr(self, 'profile_h', None), self.o.no_lsfg))
+            else:
+                host = 'host/libdmplay.so'
+                files[host] = self.so
+                for d in self.loader_libs(): files[f'drivers/{d.name}'] = d
+                drivers = sorted({f'drivers/{d.name}' for d in self.loader_libs()})
+            # 档案随包走：构建这份宿主实际用的**整个档案目录**（实验性是派生/扩容后的副本，含
+            # shader_map 等数据表——指纹按目录整体计算，缺文件会让重建误判漂移）写进包内
+            # profile/<title ID>/，重建运行库时它是第一候选——导出、导入与 PC 的包因此自给自足。
+            for src in sorted(self.g.dir.iterdir()):
+                if src.is_file():
+                    files[f'profile/{self.g.id}/{src.name}'] = src
             if theme := self.theme_files(): files.update(theme)
             if src := self.icon_png(): icon = 'icon.png'; files[icon] = src
-            for d in self.drivers() + self.loader_libs(): files[f'drivers/{d.name}'] = d
-            drivers = sorted({f'drivers/{d.name}' for d in self.drivers() + self.loader_libs()})
+            for d in self.drivers(): files[f'drivers/{d.name}'] = d
+            if self.drivers(): drivers = sorted({f'drivers/{d.name}' for d in self.drivers()})
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs, romfs_at=romfs_at, shaders=self.dmsv,
                              aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files=files, text=self.lists(), host=host, icon=icon, drivers=drivers, profile_h=getattr(self, 'profile_h', None),
+                             no_lsfg=self.o.no_lsfg,
                              pack_base=str(dst) if self.o.app else None,   # the app's mode: the pack lives in the app's own folder, not in the app's files folder
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)

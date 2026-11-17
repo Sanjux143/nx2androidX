@@ -9,10 +9,16 @@
 # NX2A_KEYSTORE_B64), so it installs over an earlier one instead of beside it.
 #
 # The APK is the run's artifact (nx2android-android-apk), and a published release gets it as an asset named
-# after the version (nx2android-v0.3.0-alpha02.apk).
+# after the version (nx2android-v0.3.0-alpha02.apk). The release carries a second asset: the package of the
+# game profiles (nx2a-profiles-r<version>-<commit>.zip), which the app does not carry - the player imports it
+# into their own folder (the app's environment check has the button).
 #
 # Only a tag builds: a push of the branch builds nothing. The tag is pushed right before the release is made,
 # and the build waits for that release to appear before it attaches the APK to it.
+#
+# A tag's build also tells the QQ group: the announcement (the version, the release's Chinese changelog, the
+# release's page and the netdisk link) goes out once the APK is attached. It is an extra: it never fails the
+# build. The bot's tickets are the repository's secrets (QQBOT_APP_ID, QQBOT_APP_SECRET, QQBOT_GROUP_OPENID).
 name: Android app
 
 on:
@@ -84,6 +90,16 @@ jobs:
           bash packaging/android-apk/build_apk.sh release
         env:
           GH_TOKEN: ${{ secrets.NIXPORT_TOKEN }}   # the private payload release
+      - name: the game profiles package
+        # The app does not carry the game profiles (half a gigabyte of shader tables): the player imports a package into
+        # their own folder (the environment check has the button). The APK build cuts it beside the assets (the cache) and
+        # the app carries only its manifest; this step puts the package in the run's artifact.
+        run: ls -la packaging/android-apk/.cache/profiles/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nx2a-game-profiles
+          path: packaging/android-apk/.cache/profiles/*.zip
+          retention-days: 14
       - name: the APK's name
         id: apk
         run: |
@@ -117,5 +133,22 @@ jobs:
           fi
           cp android/app/build/outputs/apk/release/app-release.apk "android/app/build/outputs/apk/release/${{ steps.apk.outputs.name }}"
           gh release upload "${{ github.ref_name }}" "android/app/build/outputs/apk/release/${{ steps.apk.outputs.name }}" --clobber
+          # the profiles package goes with it: a player imports it into their own folder (the app's environment check)
+          for zip in packaging/android-apk/.cache/profiles/*.zip; do
+            [ -f "$zip" ] && gh release upload "${{ github.ref_name }}" "$zip" --clobber
+          done
         env:
           GH_TOKEN: ${{ github.token }}
+      - if: startsWith(github.ref, 'refs/tags/')
+        name: the QQ group's announcement
+        # The announcement is an extra: a refused token, a group that took the bot out, a link the platform
+        # refuses - none of it may fail the release's build.
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          python devtools/qq_release_announce.py announce --tag "${{ github.ref_name }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QQBOT_APP_ID: ${{ secrets.QQBOT_APP_ID }}
+          QQBOT_APP_SECRET: ${{ secrets.QQBOT_APP_SECRET }}
+          QQBOT_GROUP_OPENID: ${{ secrets.QQBOT_GROUP_OPENID }}

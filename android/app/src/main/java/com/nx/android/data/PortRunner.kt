@@ -2,6 +2,7 @@ package com.nx.android.data
 
 import com.nx.android.BuildConfig
 import com.nx.android.R
+import com.nx.android.domain.GameSource
 import com.nx.android.domain.environment.EnvironmentSetup
 import com.nx.android.domain.environment.GuestProcessLauncher
 import java.io.File
@@ -31,9 +32,17 @@ class PortRunner(
         onEnd: () -> Unit,
     ): Thread {
         val args = portArgs(gameFile, keys, touch, fps60, experimental, aliasHeadroom, !BuildConfig.NX_LSFG,
-            sharedFont, firmware, mtReplay)
+            sharedFont, firmware, mtReplay, deviceLanguage())
+        // A file in a netdisk's folder is not there yet in its middle: the port would read it as a broken dump
+        GameSource.cloudFolder(gameFile)?.let { onLine(locale.str(R.string.runner_cloud_folder, it)) }
         return start(args, onEnd, if (packDir.isNullOrBlank()) emptyMap() else mapOf("NX2A_PACK_DIR" to packDir))
     }
+
+    /**
+     * The phone's own language: the pack follows it when the game has it (the porter takes it as a wish: a game
+     * without it is packed in its own first language, as before).
+     */
+    private fun deviceLanguage(): String = java.util.Locale.getDefault().toLanguageTag()
 
     companion object {
 
@@ -51,7 +60,8 @@ class PortRunner(
          */
         fun portArgs(gameFile: String, keys: String, touch: Boolean, fps60: Boolean,
                      experimental: Boolean, aliasHeadroom: Int, noLsfg: Boolean,
-                     sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false): List<String> {
+                     sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false,
+                     deviceLanguage: String = ""): List<String> {
             val args = mutableListOf("-m", "porter", "port", gameFile, "-k", keys, "--progress", "json", "--app")
             if (touch) args += "--touch"
             if (fps60) args += "--fps60"
@@ -60,6 +70,7 @@ class PortRunner(
             if (sharedFont.isNotBlank()) args += listOf("--shared-font", sharedFont.trim())
             if (firmware.isNotBlank()) args += listOf("--firmware", firmware.trim())
             if (mtReplay) args += "--mt-replay"
+            if (deviceLanguage.isNotBlank()) args += listOf("--language-preferred", deviceLanguage.trim())
             // A build without the frame generation (the Gradle property nxLsfg=false): the host the app builds on the
             // device is then smaller and the frame generation reports that it is not in this build (android/NOTICE.md).
             if (noLsfg) args += "--no-lsfg"
@@ -89,7 +100,20 @@ class PortRunner(
         return t
     }
 
-    private fun start(args: List<String>, onEnd: () -> Unit, extra: Map<String, String> = emptyMap()): Thread {
+    /**
+     * Imports a package of game profiles into the player's own folder (porter profiles import).
+     *
+     * The package has to be in the app's own folder: the guest sees the app's files, not the phone's storage, so a package
+     * picked on the SD card is copied into the app's folder before it is handed over. The exit code says whether the
+     * import worked; the porter's own lines say why it did not.
+     */
+    fun importProfiles(packageFile: String, onEnd: (Int) -> Unit): Thread {
+        val args = mutableListOf("-m", "porter", "profiles", "import", packageFile)
+        return start(args, { onEnd(0) }, onExit = onEnd)
+    }
+
+    private fun start(args: List<String>, onEnd: () -> Unit, extra: Map<String, String> = emptyMap(),
+                      onExit: ((Int) -> Unit)? = null): Thread {
         val t = Thread {
             try {
                 if (cancelled) return@Thread
@@ -103,6 +127,7 @@ class PortRunner(
                 val code = runCatching { p.waitFor() }.getOrDefault(-1)
                 if (code != 0) onLine(exitLine(code))
                 statusFile?.let { writeStatus(it, code) }
+                onExit?.invoke(code)
             } catch (e: Exception) {
                 onLine("[RED] ${e.message}")
             } finally {

@@ -197,8 +197,8 @@ private fun itemName(item: StorageUsage.Item): String =
 @Composable
 private fun valueText(item: StorageUsage.Item): String {
     if (item.parts.isEmpty()) return sizeText(0L)
-    val unknown = item.parts.any { it.state == StorageUsage.State.UNKNOWN }
-    val failed = item.parts.any { it.state == StorageUsage.State.FAILED }
+    val unknown = item.parts.any { it.role != StorageUsage.Role.OUTSIDE && it.state == StorageUsage.State.UNKNOWN }
+    val failed = item.parts.any { it.role != StorageUsage.Role.OUTSIDE && it.state == StorageUsage.State.FAILED }
     val measured = item.parts.any { it.state == StorageUsage.State.DONE || it.state == StorageUsage.State.PARTIAL }
     // 一样都没量到、且有够不着的：那是「大小未知」，不是 0
     if (unknown && !measured) return stringResource(R.string.storage_unreachable)
@@ -210,7 +210,7 @@ private fun valueText(item: StorageUsage.Item): String {
 /** 数字的颜色：下界与量不到的要让人看出来 */
 @Composable
 private fun valueColor(item: StorageUsage.Item) = when {
-    item.parts.any { it.state == StorageUsage.State.UNKNOWN } -> MaterialTheme.colorScheme.onSurfaceVariant
+    item.parts.any { it.role != StorageUsage.Role.OUTSIDE && it.state == StorageUsage.State.UNKNOWN } -> MaterialTheme.colorScheme.onSurfaceVariant
     item.partial -> NxPalette.Building
     else -> MaterialTheme.colorScheme.onSurface
 }
@@ -221,14 +221,20 @@ private fun breakdownText(item: StorageUsage.Item): String {
     val bits = ArrayList<String>()
     for (p in item.parts) {
         val role = stringResource(
-            if (p.role == StorageUsage.Role.WORKSPACE) R.string.storage_role_workspace else R.string.storage_role_pack)
+            when (p.role) {
+                StorageUsage.Role.WORKSPACE -> R.string.storage_role_workspace
+                StorageUsage.Role.OUTSIDE -> R.string.storage_role_outside
+                else -> R.string.storage_role_pack
+            })
         bits += when (p.state) {
             StorageUsage.State.DONE -> "$role ${sizeText(p.bytes)}"
             StorageUsage.State.PARTIAL -> "$role ${stringResource(R.string.storage_partial_value, sizeText(p.bytes))}"
             StorageUsage.State.PENDING -> "$role ${stringResource(R.string.storage_not_measured)}"
             StorageUsage.State.RUNNING -> "$role ${stringResource(R.string.storage_measuring)}"
             StorageUsage.State.FAILED -> "$role ${stringResource(R.string.storage_failed)}"
-            StorageUsage.State.UNKNOWN -> "$role ${stringResource(R.string.storage_unreachable)}"
+            // App 之外的文件：不算进合计，只说明它在哪
+            StorageUsage.State.UNKNOWN -> if (p.role == StorageUsage.Role.OUTSIDE) "$role ${stringResource(R.string.storage_outside_not_counted)}"
+                else "$role ${stringResource(R.string.storage_unreachable)}"
         }
     }
     return bits.joinToString(" · ")

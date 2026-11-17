@@ -10,9 +10,10 @@ class PortRunnerTest {
 
     private fun args(aliasHeadroom: Int, touch: Boolean = false, fps60: Boolean = false,
                      experimental: Boolean = false, noLsfg: Boolean = false,
-                     sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false): List<String> =
+                     sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false,
+                     deviceLanguage: String = ""): List<String> =
         PortRunner.portArgs("/sdcard/game.nsp", "/keys/prod.keys", touch, fps60,
-            experimental, aliasHeadroom, noLsfg, sharedFont, firmware, mtReplay)
+            experimental, aliasHeadroom, noLsfg, sharedFont, firmware, mtReplay, deviceLanguage)
 
     @Test
     fun `Auto passes no address space at all`() {
@@ -78,5 +79,20 @@ class PortRunnerTest {
     fun `the multithread replay is a switch`() {
         val a = args(-1, mtReplay = true)
         assertTrue(a.contains("--mt-replay"))
+    }
+
+    /** 手机自己的语言：游戏支持就跟着它（是一个愿望，不是要求：移植不会因此失败） */
+    @Test
+    fun `the phone's own language goes on the command line`() {
+        val a = args(-1, deviceLanguage = "zh-CN")
+        val i = a.indexOf("--language-preferred")
+        assertTrue("the option is there", i >= 0)
+        assertEquals("zh-CN", a[i + 1])
+    }
+
+    @Test
+    fun `no language means no option`() {
+        val a = args(-1)
+        assertFalse("no --language-preferred without one", a.contains("--language-preferred"))
     }
 }

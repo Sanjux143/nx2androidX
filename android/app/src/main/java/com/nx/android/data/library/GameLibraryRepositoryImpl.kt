@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.nx.android.core.storage.AppPaths
 import com.nx.android.data.PrefsStore
+import com.nx.android.data.PrefsStore.Companion.LIB_IMPORTED
 import com.nx.android.data.PrefsStore.Companion.LIB_MEMORIES_MIGRATED
 import com.nx.android.data.PrefsStore.Companion.LIB_PACKS
 import com.nx.android.data.PrefsStore.Companion.LIB_PORTS
@@ -12,6 +13,7 @@ import com.nx.android.data.StorageVolumes
 import com.nx.android.domain.GameIdentity
 import com.nx.android.domain.GameEntry
 import com.nx.android.domain.LibraryLogic
+import com.nx.android.domain.PortablePack
 import com.nx.android.domain.Ported
 import com.nx.android.domain.GameCleanup
 import com.nx.android.domain.StorageUsage
@@ -34,6 +36,7 @@ class GameLibraryRepositoryImpl @Inject constructor(
 ) : GameLibraryRepository {
     private var packPaths = HashMap<String, String>()
     private var sources = HashMap<String, String>()
+    private var imported = LinkedHashMap<String, PortablePack.Imported>()
 
     init { loadMemories() }
 
@@ -44,26 +47,38 @@ class GameLibraryRepositoryImpl @Inject constructor(
         val byTitleInternal = HashMap<String, Boolean>()
         val removable = StorageVolumes.removablePortsDirs(context).map { it.second }
         for (dir in removable) {
-        for ((titleId, candidate) in LibraryFileScanner.outIndex(dir)) {
+        for ((titleId, candidate) in LibraryFileScanner.outIndex(dir, paths.runtimes)) {
                 val chosen = LibraryLogic.preferPack(byTitle[titleId], byTitleInternal[titleId] == true,
                     candidate, candidateInternal = false)
                 byTitle[titleId] = chosen.first
                 byTitleInternal[titleId] = chosen.second
             }
         }
-        for ((titleId, candidate) in LibraryFileScanner.outIndex(paths.ports)) {
+        for ((titleId, candidate) in LibraryFileScanner.outIndex(paths.ports, paths.runtimes)) {
             val chosen = LibraryLogic.preferPack(byTitle[titleId], byTitleInternal[titleId] == true,
                 candidate, candidateInternal = true)
             byTitle[titleId] = chosen.first
             byTitleInternal[titleId] = chosen.second
         }
         val work = LibraryFileScanner.workIndex(paths.work)
-        val result = LibraryLogic.merge(byTitle, work, sources)
+        val result = LibraryLogic.merge(byTitle, work, sources, importedEntries())
         byTitle.forEach { (titleId, pack) -> packPaths[titleId] = pack.pack.absolutePath }
         savePackPaths()
         Log.i("nx2a", "library scan: ${System.currentTimeMillis() - started} ms, " +
             "${byTitle.size} packs on ${portsDirs().size} volumes, ${result.size} games")
         return result
+    }
+
+    /**
+     * The imported folders as library cards: each one is its own card (the path is its identity),
+     * even when the game is in the library already. A folder that cannot be reached (the card is
+     * not plugged in) keeps its card: the player sees that it is out of reach.
+     */
+    private fun importedEntries(): List<GameEntry> = imported.values.mapNotNull { record ->
+        val dir = File(record.path)
+        val ported = LibraryFileScanner.portFromPack(dir, paths.runtimes)
+        if (ported != null) GameEntry(ported.titleId, ported, null, null, record)
+        else GameEntry(record.titleId, null, null, null, record)
     }
 
     override fun portsDirs(): List<File> = listOf(paths.ports) + StorageVolumes.removablePortsDirs(context).map { it.second }
@@ -95,8 +110,12 @@ class GameLibraryRepositoryImpl @Inject constructor(
             for (p in unreachablePacks(e)) {
                 parts += StorageUsage.Part(StorageUsage.Role.PACK, p.absolutePath, state = StorageUsage.State.UNKNOWN)
             }
+            // 导入的包：文件在 App 之外（玩家自己挑的目录），App 不拥有那些字节，也不去量它
+            if (e.isImported && e.imported != null) {
+                parts += StorageUsage.Part(StorageUsage.Role.OUTSIDE, e.imported.path, state = StorageUsage.State.UNKNOWN)
+            }
             items += StorageUsage.Item(
-                id = e.titleId,
+                id = e.key,
                 name = e.label,
                 icon = e.pack?.icon?.absolutePath.orEmpty(),
                 // 快照要是不变的值：这里给一份拷贝，别把还在拼的列表挂出去
@@ -127,14 +146,17 @@ class GameLibraryRepositoryImpl @Inject constructor(
     override fun workRoot(): File = paths.work
     override fun existingWorkspace(titleId: String): File? =
         com.nx.android.domain.GameCleanup.workspaceOf(titleId, paths.work)?.takeIf(File::exists)
+    override fun runtimeDir(titleId: String): File = File(paths.runtimes, titleId.lowercase())
     override fun partialPacks(): List<File> = portsDirs().flatMap(LibraryFileScanner::partials)
     override fun workFolderIn(from: Long, to: Long): String? = LibraryFileScanner.workFolderIn(paths.work, from, to)
-    override fun portFromPack(pack: File): Ported? = LibraryFileScanner.portFromPack(pack)
+    override fun portFromPack(pack: File): Ported? = LibraryFileScanner.portFromPack(pack, paths.runtimes)
     override fun packDirOf(entry: GameEntry): File? = entry.pack?.pack?.parentFile
     override fun packDirOf(source: File, games: List<GameEntry>): File? =
         games.firstOrNull { it.sourcePath == source.absolutePath }?.pack?.pack?.parentFile
 
     override fun packsOf(entry: GameEntry): List<File> {
+        // 导入的包不在 App 自己的目录里：它不在这些卷上（它的位置是玩家挑的那个文件夹）
+        if (entry.isImported) return emptyList()
         val packs = ArrayList<File>()
         for (dir in portsDirs()) {
             for (pack in dir.listFiles() ?: emptyArray()) {
@@ -148,6 +170,8 @@ class GameLibraryRepositoryImpl @Inject constructor(
 
     @Synchronized
     override fun unreachablePacks(entry: GameEntry): List<File> {
+        // 导入的包够不着就是够不着（卡不在）：它不在这份记忆里
+        if (entry.isImported) return emptyList()
         val path = packPaths[entry.titleId] ?: return emptyList()
         val pack = File(path)
         if (pack.exists()) return emptyList()
@@ -188,9 +212,50 @@ class GameLibraryRepositoryImpl @Inject constructor(
         savePackPaths()
     }
 
+    /**
+     * 登记一个导入的文件夹：路径就是它的身份。
+     *
+     * 同一个文件夹不登记两次（它已经在库里了）；游戏的数据一个字节都不动，只是把 DLC 与系统
+     * 数据的行指到它现在的位置。
+     */
+    @Synchronized
+    override fun registerImported(dir: File, validation: PortablePack.Validation): PortablePack.Imported? {
+        val path = dir.absolutePath
+        if (imported.containsKey(path)) return null
+        val record = PortablePack.Imported(path, validation.titleId, validation.name)
+        imported[path] = record
+        saveImported()
+        PortablePackFiles.placeEnv(dir)
+        return record
+    }
+
+    /** 忘掉一个导入的文件夹：文件留在原地（那是玩家的文件）。 */
+    @Synchronized
+    override fun forgetImported(path: String) {
+        if (imported.remove(path) != null) saveImported()
+    }
+
+    @Synchronized
+    override fun importedPacks(): List<PortablePack.Imported> = imported.values.toList()
+
+    /**
+     * 导出一个完成的移植：一个文件夹（数据包 + 散装的游戏文件）。
+     *
+     * 导出不动 App 里的任何东西：游戏照常能玩。
+     *
+     * 这里不加锁：导出要拷十几 GB，锁住这段时间会把扫库与存储统计一起堵住。它只读参数里的包，
+     * 不碰这份记忆。
+     */
+    override fun exportPack(entry: GameEntry, targetDir: File,
+                            onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result {
+        val pack = entry.pack ?: return PortablePack.Result.fail("no_pack")
+        return PortablePackFiles.export(pack.pack, pack.romfsAt, targetDir, entry.label, onProgress)
+    }
+
     private fun loadMemories() {
         packPaths = readMap(LIB_PACKS)
         sources = readMap(LIB_SOURCES)
+        imported = readImported()
         if (!prefs.bool(LIB_MEMORIES_MIGRATED)) {
             try {
                 val legacy = prefs.json(LIB_PORTS)
@@ -223,6 +288,33 @@ class GameLibraryRepositoryImpl @Inject constructor(
         val json = JSONObject()
         values.forEach { (titleId, path) -> json.put(titleId, path) }
         prefs.putJson(key, json)
+    }
+
+    /**
+     * 登记过的导入文件夹：路径 → 它是什么游戏。
+     *
+     * 记着游戏的名字与 title ID 是为了文件夹够不着的时候（卡没插）卡还在库里。
+     */
+    private fun readImported(): LinkedHashMap<String, PortablePack.Imported> {
+        val out = LinkedHashMap<String, PortablePack.Imported>()
+        try {
+            val json = prefs.json(LIB_IMPORTED)
+            for (path in json.keys()) {
+                val o = json.optJSONObject(path) ?: continue
+                val titleId = o.optString("title_id")
+                if (titleId.isEmpty()) continue
+                out[path] = PortablePack.Imported(path, titleId, o.optString("name"))
+            }
+        } catch (_: Exception) { }
+        return out
+    }
+
+    private fun saveImported() {
+        val json = JSONObject()
+        imported.forEach { (path, record) ->
+            json.put(path, JSONObject().put("title_id", record.titleId).put("name", record.name))
+        }
+        prefs.putJson(LIB_IMPORTED, json)
     }
 }
 

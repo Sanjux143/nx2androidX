@@ -11,6 +11,7 @@ data class PortEvent(
     val stages: Int,         // stage: how many there are
     val name: String,        // progress: the stage's name
     val step: String,        // progress: what within the stage
+    val note: String,        // progress: a line of the stage's own work (the rewriter's progress)
     val frac: Float,         // progress: 0..1, or -1 when absent
     val apk: String,         // result: the APK the port made
     val data: String,        // result: the data pack
@@ -32,6 +33,7 @@ object PortEvents {
                 stages = o.optInt("n", 0),
                 name = o.optString("name"),
                 step = o.optString("step"),
+                note = o.optString("note"),
                 frac = if (o.has("frac")) o.optDouble("frac", -1.0).toFloat() else -1f,
                 apk = o.optString("apk"),
                 data = o.optString("data"),

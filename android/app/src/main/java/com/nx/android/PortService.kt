@@ -5,26 +5,25 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.widget.Toast
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import android.widget.Toast
 import androidx.core.content.ContextCompat
-import dagger.hilt.android.AndroidEntryPoint
-import com.nx.android.domain.porting.PortPhase
-import com.nx.android.domain.GameConfig
-import com.nx.android.domain.ALIAS_AUTO
-import javax.inject.Inject
-import com.nx.android.R
 import com.nx.android.appstate.PortState
 import com.nx.android.appstate.porting.PortCompletionCoordinator
 import com.nx.android.data.AppLocale
 import com.nx.android.data.AppLog
 import com.nx.android.data.PortRunner
+import com.nx.android.domain.ALIAS_AUTO
+import com.nx.android.domain.GameConfig
+import com.nx.android.domain.GameIdentity
 import com.nx.android.domain.environment.EnvironmentSetup
 import com.nx.android.domain.environment.GuestProcessLauncher
-import com.nx.android.domain.GameIdentity
+import com.nx.android.domain.porting.PortPhase
+import dagger.hilt.android.AndroidEntryPoint
 import java.io.File
+import javax.inject.Inject
 
 /**
  * The foreground service that keeps the port alive while the app is in the background or the screen is off: the
@@ -139,11 +138,6 @@ class PortService : Service() {
         }
         val game = intent?.getStringExtra(GAME) ?: return stop()
         if (port.running) return START_NOT_STICKY
-        if (com.nx.android.data.Player.playProcessAlive(this)) {
-            startForeground(1, notification())
-            stopShown()
-            return stop()
-        }
         val keys = intent.getStringExtra(KEYS) ?: return stop()
         // The state goes up before the foreground notification: the UI turns at once
         // 状态先起来，再挂前台通知：界面立刻转向

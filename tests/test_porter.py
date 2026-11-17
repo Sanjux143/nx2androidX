@@ -245,7 +245,7 @@ class DataPack(unittest.TestCase):
             self.assertNotIn('romfs_at', datapack.build(t / 'pc-data', profile=p, version='v196608', display='1.03', patched=t / 'patched', romfs=t / 'romfs', shaders=t / 'shaders.dmsv'))   # the PC flow's pack carries its own RomFS
         finally: shutil.rmtree(t, ignore_errors=True)
 
-    def test_the_app_pack_carries_no_game_profile(self):   # the profile lives in the workspace or in the payload: the pack carries no copy of it
+    def test_the_pack_carries_its_own_build_profile(self):   # the build profile rides in the pack (profile/<title ID>/): a rebuild reads it first, so the pack is self-sufficient; the bulk profiles package is not in it
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_pack_'))
         try:
             port = pipeline.Port(pipeline.Options(t))
@@ -267,7 +267,9 @@ class DataPack(unittest.TestCase):
                  mock.patch.object(port, 'loader_libs', return_value=[]), \
                  mock.patch.object(port, 'lists', return_value={}):
                 port.data()
-            self.assertEqual([name for name in captured['files'] if name.startswith('profile/')], [])
+            profile_files = [name for name in captured['files'] if name.startswith('profile/')]
+            self.assertEqual({name.split('/')[1] for name in profile_files}, {NEO})   # its own build profile's title id, nobody else's
+            self.assertIn(f'profile/{NEO}/game.tsv', profile_files)                   # the core table is in it
         finally:
             shutil.rmtree(t, ignore_errors=True)
 

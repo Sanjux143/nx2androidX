@@ -30,7 +30,11 @@ def _decomp(raw, size, kind):
     raise ValueError(f'UnityFS: unknown compression {kind}')
 
 def _cstr(d, p):
-    e = d.index(b'\0', p); return d[p:e].decode('utf-8', 'replace'), e + 1
+    # d.find, not d.index: a mapped file (a file too big for the device's memory) has no index, and find is the same
+    # on bytes and on a mapping. A string with no terminator is a broken bundle: it stops the read, as index did.
+    e = d.find(b'\0', p)
+    if e < 0: raise ValueError('UnityFS: a string with no NUL terminator')
+    return d[p:e].decode('utf-8', 'replace'), e + 1
 
 def bundle_files(d):
     """UnityFS bundle → [(path, bytes)]"""
@@ -63,8 +67,8 @@ def common_strings(image):
     if a < 0: raise ValueError('no Unity common string table in main (AABB\\0AnimationClip...)')
     tab, p = {}, a
     while True:
-        e = image.index(b'\0', p)
-        if e == p: break
+        e = image.find(b'\0', p)   # find, not index: a mapped main (too big for the device's memory) has no index
+        if e < 0 or e == p: break
         s = image[p:e]
         if not all(0x20 <= ch < 0x7f for ch in s): break
         tab[p - a] = s.decode(); p = e + 1

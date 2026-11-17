@@ -45,9 +45,6 @@ internal fun HeroDetails(
     entry: GameEntry,
     profile: GameProfile? = null,
     status: GameStatus,
-    stale: Boolean,
-    locked: Boolean,
-    runningGameName: String,
     portProgress: Float,
     onBuild: () -> Unit,
     onRun: () -> Unit,
@@ -59,8 +56,8 @@ internal fun HeroDetails(
     val titleId = entry.titleId
     // 主按钮的三种走法：正在构建（去看进度）、已完成（去运行）、其余（去构建）
     // 主动作只有这一份实现：触屏的按钮、手柄的确认键、提示条上的文案都走它
-    val action = mainActionOf(status, stale)
-    val actionLabel = mainActionLabel(action, stale)
+    val action = mainActionOf(status)
+    val actionLabel = mainActionLabel(action)
     // 已经移植完的：配置钮写的是「运行配置」，其余是「移植配置」
     val running = status == GameStatus.DONE
 
@@ -73,7 +70,7 @@ internal fun HeroDetails(
         Text(
             (listOfNotNull(titleId, versionTag(ported), statusLabel(status) +
                 if (status == GameStatus.PORTING) " ${(portProgress * 100).toInt()}%" else "",
-                experimentalTag(ported), reportTag(ported)) + needsTags(profile, ported)).joinToString("  ·  "),
+                experimentalTag(ported)) + needsTags(profile, ported)).joinToString("  ·  "),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -84,8 +81,8 @@ internal fun HeroDetails(
             Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
-                        .background(if (locked) NxPalette.Unbuilt else NxPalette.Cream)
-                        .clickable(enabled = !locked) {
+                        .background(NxPalette.Cream)
+                        .clickable {
                             when (action) {
                                 MainAction.VIEW_BUILD -> onViewBuild()
                                 MainAction.RUN -> onRun()
@@ -95,13 +92,12 @@ internal fun HeroDetails(
                         .padding(horizontal = 30.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Filled.PlayArrow, null, Modifier.size(20.dp),
-                         tint = if (locked) NxPalette.Background else Color.Black)
+                    Icon(Icons.Filled.PlayArrow, null, Modifier.size(20.dp), tint = Color.Black)
                     Spacer(Modifier.width(6.dp))
                     Text(
                         actionLabel,
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (locked) NxPalette.Background else Color.Black,
+                        color = Color.Black,
                     )
             }
             // 配置圆钮
@@ -111,11 +107,6 @@ internal fun HeroDetails(
             ) {
                 Icon(Icons.Filled.Tune, if (running) stringResource(R.string.lib_run_config) else stringResource(R.string.lib_port_config), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onBackground)
             }
-        }
-        if (locked) {
-            Spacer(Modifier.height(6.dp))
-            Text(stringResource(R.string.lib_close_current_game, runningGameName), style = MaterialTheme.typography.bodySmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -128,9 +119,6 @@ private fun HeroDetailsNotBuiltPreview() {
         HeroDetails(
             entry = previewGames[2].entry,
             status = GameStatus.NEEDS_BUILD,
-            stale = false,
-            locked = false,
-            runningGameName = "",
             portProgress = 0f,
             onBuild = {},
             onRun = {},
@@ -148,29 +136,6 @@ private fun HeroDetailsReadyPreview() {
         HeroDetails(
             entry = previewGames[0].entry,
             status = GameStatus.DONE,
-            stale = false,
-            locked = false,
-            runningGameName = "",
-            portProgress = 0f,
-            onBuild = {},
-            onRun = {},
-            onViewBuild = {},
-            onConfigure = {},
-        )
-    }
-}
-
-/** 预览：别的游戏在玩（主按钮置灰，并说明要先关掉那个） */
-@Preview(name = "Details, another game runs", widthDp = 700, heightDp = 240, showBackground = true)
-@Composable
-private fun HeroDetailsLockedPreview() {
-    PreviewSurface {
-        HeroDetails(
-            entry = previewGames[0].entry,
-            status = GameStatus.DONE,
-            stale = false,
-            locked = true,
-            runningGameName = "Hades II",
             portProgress = 0f,
             onBuild = {},
             onRun = {},
@@ -188,9 +153,6 @@ private fun HeroDetailsStalePreview() {
         HeroDetails(
             entry = previewGames[3].entry,
             status = GameStatus.NEEDS_BUILD,
-            stale = true,
-            locked = false,
-            runningGameName = "",
             portProgress = 0f,
             onBuild = {},
             onRun = {},

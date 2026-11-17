@@ -18,21 +18,29 @@ enum class GameStatus {
  * 库里的一张卡：一个游戏（title ID）+ 它的三样东西——数据包、构建工作区、上次构建用的源文件。
  *
  * 身份是 title ID，不是路径：源文件被挪走或删掉时，卡还在（包与工作区还在）。
+ *
+ * 导入的包是另一回事：它的身份是**它自己的路径**（[imported]），同一个游戏因此可以在库里
+ * 有一份 App 自己做的和一份导入的，两份各跑各的。
  */
 data class GameEntry(
     val titleId: String,        // 游戏的 title ID（每张卡都有）
     val pack: Ported?,          // 数据包
     val work: File?,            // 构建工作区
     val sourcePath: String?,    // 上次构建用的源文件路径（文件可能已经不在了）
+    val imported: PortablePack.Imported? = null,   // 导入的包：路径就是它的身份
 ) {
     /** 上次构建用的那个源文件：还在吗 */
     val source: File? get() = sourcePath?.let { File(it) }?.takeIf { it.isFile }
 
-    /** 卡片的稳定标识 */
-    val key: String get() = titleId
+    /** 这张卡是导入的（不是 App 自己移植的） */
+    val isImported: Boolean get() = imported != null
 
-    /** 卡上的名字：包清单里的游戏名；没有包就用记住的源路径中的文件名 */
+    /** 卡片的稳定标识：导入的卡按自己的路径认，本地的卡按 title ID 认 */
+    val key: String get() = imported?.path ?: titleId
+
+    /** 卡上的名字：包清单里的游戏名；导入的卡用登记时记下的名字；没有包就用记住的源路径中的文件名 */
     val label: String get() = pack?.name?.trim()?.takeIf { it.isNotEmpty() }
+        ?: imported?.name?.trim()?.takeIf { it.isNotEmpty() }
         ?: sourcePath?.let { GameIdentity.displayName(File(it)) }
         ?: titleId
 
@@ -42,6 +50,10 @@ data class GameEntry(
      */
     val romfsSharedWithWorkspace: Boolean
         get() = pack != null && GameCleanup.packReadsWorkspace(pack.romfsAt, work)
+
+    /** 游戏的文件就在包里（导入的文件夹自带 RomFS/；老的 PC 工具出的包也是） */
+    val romfsInside: Boolean
+        get() = pack != null && File(pack.pack, PortablePack.ROMFS).isDirectory
 }
 
 
@@ -98,10 +110,14 @@ object GameConfigMigration {
 /**
  * 一个完成的移植：数据包是唯一产物（手机线不再产出 APK），宿主程序（libdmplay.so）在包里，App 的
  * 玩家把它拷进私有目录后直接运行。「已完成」以包与宿主齐备为准。
+ *
+ * 新格式的包（清单没有 host 字段）：运行库不在包里——它在 App 私有统一目录（runtimes/<title ID 小写>），
+ * 由目录侧的构建标记（build.json）说清这份运行库是按什么建的。旧格式（清单带 host）照旧可用，可在
+ * 首次启动时晋升拷贝进统一目录。
  */
 data class Ported(
     val pack: File,        // <App>-data/
-    val host: File,        // 包内的宿主（默认 host/libdmplay.so，清单的 "host" 字段同名）
+    val host: File,        // 包内的宿主（默认 host/libdmplay.so，清单的 "host" 字段同名）；新格式的包里没有它
     val icon: File?,       // 包内的图标（icon.png），没有为 null
     val titleId: String,   // 清单里的 title id（存档、私有目录都按它分）
     val name: String = "", // 清单里的游戏名
@@ -111,18 +127,42 @@ data class Ported(
     val romfsAt: String = "", // 清单里的 romfs_at：游戏的文件不在包里，在工作区（老的数据包没有这一项：它们自带 RomFS）
     val graphics: String = "", // 清单里的 graphics：游戏自己用的图形接口（vulkan / gl / nvn，空 = 不知道；老的数据包没有这一项）
     val lan: Boolean? = null, // 清单里的 lan：游戏能不能局域联机（null = 清单里没有这一项：老的数据包，由档案补上）
+    val hostDeclared: Boolean = true, // 清单里声明了 host（= 旧格式，运行库在包里；没有这个字段 = 新格式，运行库在统一目录）。默认 true：直接构造的场合按旧格式对待（包里带着宿主）
+    val noLsfg: Boolean? = null, // 清单里的 no_lsfg（构建指纹的一部分；老的数据包没有这一项）
+    val profileH: String = "", // 清单里的 profile_h（这个包的运行库按哪份档案编的）：与目录侧标记比对
+    val marker: RuntimeBuildMarker? = null, // 统一目录侧的构建标记（新格式才有；启动判断只读目录侧）
 ) {
-    /** The pack has its host: it is a port, not a leftover manifest. */
-    val hasHost: Boolean get() = host.isFile
+    /** The pack has its runtime (a legacy pack's host file in place; a new-format one its folder marker): it is a port, not a leftover manifest. */
+    val hasHost: Boolean get() = if (hostDeclared) host.isFile else marker != null
 
-    /** The pack has its host, was built for the current player interface revision, and its game's files are there. */
-    val runnable: Boolean get() = host.isFile && playerApiRevision == PlayerApiRevision.CURRENT && !romfsMissing
+    /**
+     * The pack can run: an old-format pack needs its host (built for the current player interface) inside;
+     * a new-format one needs the runtime folder's build marker for the current interface. The game's files
+     * have to be there either way.
+     */
+    val runnable: Boolean get() = !romfsMissing && when {
+        hostDeclared -> host.isFile && playerApiRevision == PlayerApiRevision.CURRENT
+        else -> marker != null && marker.playerApiRevision == PlayerApiRevision.CURRENT
+    }
 
     /** Missing host or a different/legacy revision requires a runtime update. */
-    val needsRuntimeUpdate: Boolean get() = !host.isFile || playerApiRevision != PlayerApiRevision.CURRENT
+    val needsRuntimeUpdate: Boolean get() = when {
+        hostDeclared -> !host.isFile || playerApiRevision != PlayerApiRevision.CURRENT
+        else -> marker == null || marker.playerApiRevision != PlayerApiRevision.CURRENT
+    }
 
     /**
      * 包的 RomFS 在工作区里（移植时没有复制一份进包）：那个文件夹没了，游戏就跑不起来 —— 要重新移植。
      */
     val romfsMissing: Boolean get() = romfsAt.isNotEmpty() && !File(romfsAt).isDirectory
 }
+
+/**
+ * 统一目录侧的构建标记（build.json）：这份运行库是按什么建的。启动前的指纹比对只读目录侧——
+ * 目录升格为正本后，版本跟着正本走（旧包晋升时这份标记由 App 自己写）。
+ */
+data class RuntimeBuildMarker(
+    val playerApiRevision: Int,
+    val profileH: String,
+    val noLsfg: Boolean?,   // 旧包晋升出来的运行库不知道这一项（null = 没记，不参与比对）
+)

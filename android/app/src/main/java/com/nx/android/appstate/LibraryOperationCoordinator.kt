@@ -8,6 +8,7 @@ import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameConfig
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.PackMover
+import com.nx.android.domain.PortablePack
 import com.nx.android.domain.library.GameLibraryRepository
 import java.io.File
 import javax.inject.Inject
@@ -17,30 +18,19 @@ import javax.inject.Singleton
 @Singleton
 class LibraryOperationCoordinator @Inject constructor(
     private val port: PortState,
-    private val player: PlayerState,
-    private val runtime: RuntimeUpdateState,
     private val repository: GameLibraryRepository,
 ) {
     private val moving = HashSet<String>()
 
     fun beginBuild(game: String, config: GameConfig): Boolean = synchronized(moving) {
-        if (moving.isNotEmpty() || port.running || player.running || runtime.running) return@synchronized false
+        if (moving.isNotEmpty() || port.running) return@synchronized false
         port.begin(game, config)
         true
     }
 
-    fun beginRuntimeUpdate(pack: String, name: String): Boolean = synchronized(moving) {
-        if (moving.isNotEmpty() || port.running || player.running || runtime.running) return@synchronized false
-        runtime.begin(pack, name)
-    }
-
-    fun beginPlay(titleId: String, name: String): Boolean = synchronized(moving) {
-        if (moving.isNotEmpty() || port.running || player.running || runtime.running) return@synchronized false
-        player.start(titleId, name)
-        true
-    }
-
     fun remove(entry: GameEntry): GameCleanup.Result = synchronized(moving) {
+        // 导入的游戏：那个文件夹是玩家的文件，删它等于替玩家删东西 —— 只忘路径
+        if (entry.isImported) return@synchronized removeImported(entry)
         removalBlockedLocked(entry)?.let { return@synchronized GameCleanup.Result(it) }
         val plan = planRemoval(entry)
         removalBlockedLocked(entry)?.let { return@synchronized GameCleanup.Result(it) }
@@ -53,6 +43,18 @@ class LibraryOperationCoordinator @Inject constructor(
             workspaceKnown = plan.workspaceKnown,
             failed = deleted.failed + unreachable,
         )
+    }
+
+    /**
+     * 移出一个导入的游戏：只忘掉那个路径。
+     *
+     * 那个文件夹是玩家的文件（可能在卡上），App 不删它、也不碰它 —— 它只是不再出现在库里。
+     */
+    fun removeImported(entry: GameEntry): GameCleanup.Result = synchronized(moving) {
+        removalBlockedLocked(entry)?.let { return@synchronized GameCleanup.Result(it) }
+        val path = entry.imported?.path ?: return@synchronized GameCleanup.Result(GameCleanup.Outcome.FAILED)
+        repository.forgetImported(path)
+        GameCleanup.Result(outcome = GameCleanup.Outcome.DONE, workspaceKnown = true)
     }
 
     fun clearCache(entry: GameEntry): GameCleanup.Result = synchronized(moving) {
@@ -87,11 +89,24 @@ class LibraryOperationCoordinator @Inject constructor(
 
     fun moveBlocked(entry: GameEntry): GameCleanup.Outcome? = moveBlocked(entry, includeMoving = true)
 
+    /** 导出一个完成的移植：一个文件夹（数据包 + 散装的游戏文件） */
+    fun exportPack(entry: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result =
+        repository.exportPack(entry, targetDir, onProgress)
+
+    /** 登记一个导入的文件夹（路径就是它的身份） */
+    fun registerImported(dir: File, validation: PortablePack.Validation): PortablePack.Imported? =
+        repository.registerImported(dir, validation)
+
+    /** 忘掉一个导入的文件夹（文件留在原地） */
+    fun forgetImported(path: String) = repository.forgetImported(path)
+
     fun planRemoval(entry: GameEntry): GameCleanup.Plan {
         val packs = repository.packsOf(entry)
         val workspace = entry.work ?: repository.existingWorkspace(entry.titleId)
         val partials = if (port.running) emptyList() else repository.partialPacks()
-        return GameCleanup.plan(entry.titleId, packs, workspace, partials)
+        // 统一目录里那份运行库是唯一正本：删游戏不删它，它就成了永久孤儿（清构建缓存不删它——那是能再生的东西之外的正本）
+        val runtime = repository.runtimeDir(entry.titleId)
+        return GameCleanup.plan(entry.titleId, packs, workspace, partials, runtime = runtime)
     }
 
     fun planCache(entry: GameEntry): GameCleanup.Plan {
@@ -113,19 +128,17 @@ class LibraryOperationCoordinator @Inject constructor(
     }
 
     private fun removalBlockedLocked(entry: GameEntry): GameCleanup.Outcome? {
-        if (runtime.running) return GameCleanup.Outcome.BUSY_PORTING
         if (entry.titleId in moving) return GameCleanup.Outcome.BUSY_MOVING
         return LibraryLogic.removalBlocked(
             portRunning = port.running, portGameFile = port.gameFile, gamePath = entry.sourcePath,
-            playerRunning = player.running, playerTitleId = player.titleId, titleId = entry.titleId, packPath = entry.pack?.pack?.absolutePath,
+            titleId = entry.titleId, packPath = entry.pack?.pack?.absolutePath,
         )
     }
 
     private fun moveBlocked(entry: GameEntry, includeMoving: Boolean): GameCleanup.Outcome? = synchronized(moving) {
-        if (runtime.running) return@synchronized GameCleanup.Outcome.BUSY_PORTING
         LibraryLogic.moveBlocked(
             portRunning = port.running, portGameFile = port.gameFile, gamePath = entry.sourcePath,
-            playerRunning = player.running, playerTitleId = player.titleId, titleId = entry.titleId, packPath = entry.pack?.pack?.absolutePath,
+            titleId = entry.titleId, packPath = entry.pack?.pack?.absolutePath,
             moving = includeMoving && entry.titleId in moving,
         )
     }

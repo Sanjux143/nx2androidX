@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
@@ -14,6 +15,8 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.MotionEvent
 import android.view.View
+import android.widget.Toast
+import com.nx.android.R
 import com.nx.android.data.PrefsStore
 import com.nx.android.game.Native
 import org.json.JSONObject
@@ -43,6 +46,7 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
         private val LABELS = mapOf("plus" to "+", "minus" to "−")
         private const val TAP_MS = 14      // 按下那一下的时长（照旧宿主 haptics_android.c 的 vib_tap）
         private const val TAP_AMP = 140    // 它的振幅（1..255）
+        private const val GHOST_ALPHA = 0.30f   // 藏起来的控件在编辑器里只画这么亮（它只是一团影子）
     }
 
     /** 主题从哪来：自带读数据包的 overlay/，默认读 app 里的默认主题包 */
@@ -87,6 +91,10 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     /** 「按键风格」也是每个游戏一份（键 pad.style.<title id>） */
     private val styleKey = PadStyle.key(titleId)
 
+    /** 藏起来的控件：也是每个游戏一份（键 pad.hidden.<title id>） */
+    private val hiddenKey = PadHidden.key(titleId)
+    private var hidden: MutableSet<String> = PadHidden.parse(padPrefs.str(hiddenKey)).toMutableSet()
+
     /** 当前风格：自带（主题贴图）或透明（简化的半透明形状）。它只改绘制，不动输入 */
     private var styleState: PadStyle = PadStyle.PACK
 
@@ -125,6 +133,7 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val ghostLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }   // 幽灵的虚线框
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val spPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val dimPaint = Paint()
@@ -348,11 +357,15 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     fun controls(): List<PadControl> {
         controlsCache?.let { return it }
         val base = layout.controls
-        val outList: List<PadControl> = if (pend.isEmpty()) base else {
+        val outList: List<PadControl> = if (pend.isEmpty()) {
+            // 藏起来的控件还在表里（只是带个标志）：这样下标不变，贴图、暂存、菜单键的写入都不会错位
+            if (hidden.isEmpty()) base else base.map { if (hidden.contains(it.name)) it.copy(hidden = true) else it }
+        } else {
             val l = ArrayList<PadControl>(base.size)
             for ((i, c) in base.withIndex()) {
                 val p = pend[i]
-                l += if (p == null) c else padResized(c, p.s, layout.scale, p.cx, p.cy)
+                val sized = if (p == null) c else padResized(c, p.s, layout.scale, p.cx, p.cy)
+                l += if (hidden.contains(sized.name)) sized.copy(hidden = true) else sized
             }
             l
         }
@@ -434,9 +447,45 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     fun resetControls() {
         pend.clear()
         controlsCache = null
+        if (hidden.isNotEmpty()) {   // 恢复默认也把藏起来的键放回来
+            hidden.clear()
+            padPrefs.put(hiddenKey, PadHidden.format(hidden))
+        }
         runCatching { Native.padLayoutReset(); Native.padLayoutSave() }
         fetchLayout()
         invalidate()
+    }
+
+    // ---- 藏起来的控件（编辑器长按藏起来，点幽灵找回来）----
+
+    /** 把一个控件藏起来：记下来，对局里它不出现、那片触摸归游戏 */
+    fun hideControl(ctl: Int): Boolean {
+        val c = layout.controls.getOrNull(ctl) ?: return false
+        if (c.isMenu) return false   // 菜单键是抽屉入口，永远可见
+        if (!hidden.add(c.name)) return false
+        padPrefs.put(hiddenKey, PadHidden.format(hidden))
+        controlsCache = null
+        invalidate()
+        tellHidden(c)
+        return true
+    }
+
+    /** 把藏起来的控件找回来（编辑器里点一下那个半透明的幽灵） */
+    fun showControl(ctl: Int): Boolean {
+        val c = layout.controls.getOrNull(ctl) ?: return false
+        if (!hidden.remove(c.name)) return false
+        padPrefs.put(hiddenKey, PadHidden.format(hidden))
+        controlsCache = null
+        invalidate()
+        return true
+    }
+
+    /** 藏起来的时候给个反馈：短震一下 + 一条 Toast（说清藏了哪个、怎么找回来） */
+    private fun tellHidden(c: PadControl) {
+        tapVibration()
+        runCatching {
+            Toast.makeText(context, context.getString(R.string.editor_hidden_toast, padControlLabel(c, context)), Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ---- 主题：数据包的 overlay/theme.tsv + 图册（与宿主主题同源数据）----
@@ -551,16 +600,19 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
             // 缩放与宿主 ov_tsp 一样：窗口高 / 设计高 × 密度系数 × 控件自己的大小系数——少了后两个，
             // 贴图就比命中框小，按键看着没变大
             val kBase = (H / designH) * layout.scale
-            spPaint.alpha = (255 * a).toInt().coerceIn(0, 255)
             // 装饰：在别的下面（宿主 ov_theme_draw 也是先画装饰）
             for ((i, c) in ctrls.withIndex()) {
+                if (c.hidden && !editing) continue   // 藏起来的：对局里不画，编辑器里画成幽灵
                 val set = spriteOf.getOrNull(i) ?: continue
+                spPaint.alpha = alphaOf(c, a)
                 for (s in set.decor) drawSp(canvas, atlasB, s, c, kBase * c.s, 0f, 0f)
             }
             // 控件：一个一个来（布局的顺序）
             for ((i, c) in ctrls.withIndex()) {
+                if (c.hidden && !editing) continue
                 val set = spriteOf.getOrNull(i) ?: continue
                 val kc = kBase * c.s
+                spPaint.alpha = alphaOf(c, a)
                 // 摇杆的帽：跟着手指走（宿主 ov_theme_draw 乘的是 travel × 自己的缩放）
                 for (s in set.knob) {
                     val ki = if (c.name == "stick_r") 2 else 0
@@ -580,15 +632,25 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
 
         // 矢量退路（包里没有主题时）
         for ((i, c) in ctrls.withIndex()) {
+            if (c.hidden && !editing) continue
             val cx = c.cx * H; val cy = c.cy * H; val rr = c.hw * H
             val held = pressed.contains(i)
-            fill.color = Color.argb(((if (held) 55 else 25) * a).toInt(), 255, 255, 255)
+            val f = if (c.hidden) GHOST_ALPHA else 1f
+            fill.color = Color.argb(((if (held) 55 else 25) * a * f).toInt(), 255, 255, 255)
             canvas.drawCircle(cx, cy, rr, fill)
-            line.color = Color.argb((190 * a).toInt(), 255, 255, 255); line.strokeWidth = 2.5f
+            line.color = Color.argb((190 * a * f).toInt(), 255, 255, 255); line.strokeWidth = 2.5f
             canvas.drawCircle(cx, cy, rr, line)
-            text.color = Color.argb((220 * a).toInt(), 255, 255, 255)
-            canvas.drawText(label(c.name), cx, cy + text.textSize / 3, text)
+            if (!c.hidden) {   // 幽灵的名字由它的虚线框那里写（这里就别写两遍了）
+                text.color = Color.argb((220 * a).toInt(), 255, 255, 255)
+                canvas.drawText(label(c.name), cx, cy + text.textSize / 3, text)
+            }
         }
+    }
+
+    /** 一个控件的不透明度：藏起来的（编辑器里的幽灵）只有一小半亮 */
+    private fun alphaOf(c: PadControl, a: Float): Int {
+        val f = if (c.hidden) GHOST_ALPHA else 1f
+        return (255 * a * f).toInt().coerceIn(0, 255)
     }
 
     /** 一个贴图：源矩形在图册上，目标矩形在控件中心加偏移的地方（矩形是复用的，不分配） */
@@ -604,6 +666,9 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     /**
      * 编辑器里的框：每个控件一圈细白框，提示它的边界（宿主从前也是这样画的：ov_render 的 edit 分支，
      * SP_WHITE 细框，透明度 0.35）。
+     *
+     * 藏起来的控件画虚线框 + 它的名字：它藏了，但还在那儿（点一下就回来），
+     * 跟正常控件的实线框要一眼分得开。
      */
     private fun drawFrames(canvas: Canvas, ctrls: List<PadControl>) {
         val H = height.toFloat()
@@ -613,7 +678,30 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
         for (c in ctrls) {
             val cx = c.cx * H; val cy = c.cy * H
             val hw = c.hw * H; val hh = c.hh * H
-            canvas.drawRect(cx - hw, cy - hh, cx + hw, cy + hh, line)
+            if (c.hidden) {
+                ghostLine.color = Color.argb(170, 255, 255, 255)
+                ghostLine.strokeWidth = t
+                ghostLine.pathEffect = DashPathEffect(floatArrayOf(t * 3f, t * 2f), 0f)
+                canvas.drawRect(cx - hw, cy - hh, cx + hw, cy + hh, ghostLine)
+                ghostLine.pathEffect = null
+                text.color = Color.argb(210, 255, 255, 255)
+                text.textSize = H * 0.024f
+                canvas.drawText(padControlLabel(c, context), cx, cy + text.textSize / 3, text)
+            } else {
+                canvas.drawRect(cx - hw, cy - hh, cx + hw, cy + hh, line)
+            }
         }
     }
+}
+
+/** 控件的名字（幽灵上写着它是谁，大小对话框的标题也是它） */
+fun padControlLabel(c: PadControl, ctx: Context): String = when {
+    c.kind == "stick" -> ctx.getString(if (c.name == "stick_r") R.string.editor_ctl_stick_r else R.string.editor_ctl_stick_l)
+    c.kind == "dpad" -> ctx.getString(R.string.editor_ctl_dpad)
+    c.kind == "menu" -> ctx.getString(R.string.editor_ctl_menu)
+    c.name == "minus" -> ctx.getString(R.string.editor_ctl_minus)
+    c.name == "plus" -> ctx.getString(R.string.editor_ctl_plus)
+    c.name == "ls" -> "L3"
+    c.name == "rs" -> "R3"
+    else -> c.name.uppercase()
 }

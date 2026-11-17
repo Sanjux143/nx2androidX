@@ -101,17 +101,33 @@ def check_room():
 
 SMALL_FILE = 64   # MB: a file this small cannot fill the device's memory (check_room refuses a device with less than 256 MB free), so it needs no memory figures
 
-def read_whole(path):
+def read_whole(path, map_ok=True):
     """A file's bytes, read whole: the split's readers take a whole file (a Unity bundle, an archive's data file, the main program). A file that does not fit in this device's memory is
-    refused with a clear error instead of being read: the system kills the split otherwise, and the log says nothing about it"""
+    mapped instead of read (its pages come from the file cache, not the heap): the readers slice it and look for magics in it, so it reads the same (13 Sentinels' 4.2 GB asset archive,
+    which holds no shaders at all: its game's shaders are in main). map_ok=False: the file has to fit (a zstd frame is decompressed whole).
+    The audited readers slice the buffer, search it with find (not 'in': a mapping's 'in' compares single bytes) and unpack from it; a reader that needs a bytes-only method
+    (index, count, split, decode) takes a slice first"""
     size = os.path.getsize(path)
     if size > SMALL_FILE * 1024 * 1024:
         _, avail = meminfo()
         if avail is not None:
             room = max(avail / 2, budget_mb())   # MB: half of what is free, or the split's own budget, whichever is larger
             if size > room * 1024 * 1024:
-                red(f'{path}: {size:,} bytes do not fit in this device\'s memory ({avail:.0f} MB free, the split reads a file whole up to {room:.0f} MB): close the other apps and start it again')
+                if not map_ok: red(f'{path}: {size:,} bytes do not fit in this device\'s memory ({avail:.0f} MB free, the split reads a file whole up to {room:.0f} MB): close the other apps and start it again')
+                return map_file(path)
     with open(path, 'rb') as f: return f.read()
+
+def map_file(path):
+    """A file mapped for reading: its bytes without holding them in memory (the pages come from the file cache, not the heap). The mapping is closed when it is collected"""
+    with open(path, 'rb') as f:
+        size = os.fstat(f.fileno()).st_size
+        if not size: return b''
+        print(f'{path}: {size:,} bytes, mapped instead of read into memory', flush=True)
+        return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+
+def has(d, magic):
+    """Whether a buffer holds a magic: d.find(magic) >= 0, not 'in' (an mmap's 'in' compares single bytes, so a multi-byte magic is never found in it)"""
+    return d.find(magic) >= 0
 
 def spill_file():
     """This process's spill file (one per process)"""
@@ -405,8 +421,8 @@ def kt_shaders(d, label, out):
     searched for GLSLC outputs, and its SARC archives (the Nintendo layouts, 2D UI) for BNSH, as everywhere else"""
     z = kt_gz(d)
     if z is not None: d = z
-    if b'\x91\x68\x86\x19' in d: out.extend(glslc_shaders(d, label, need=False))
-    if d[:4] == b'SARC' or b'BNSH\0\0\0\0' in d: scan_blob(d, label, out)
+    if has(d, b'\x91\x68\x86\x19'): out.extend(glslc_shaders(d, label, need=False))
+    if d[:4] == b'SARC' or has(d, b'BNSH\0\0\0\0'): scan_blob(d, label, out)
 
 def linkdata_jobs(path, rel, parts=64):
     """Three Houses' LINKDATA: DATA0.bin, beside DATA1.bin (6.9 GB), indexes it with 32-byte entries {u64 offset, u64 inflated length, u64 stored length, u64 compressed}. The entries are split into
@@ -803,7 +819,8 @@ def bnd3_members(d, label):
     for i in range(struct.unpack_from('<i', d, 0x10)[0]):
         _, n, off, _, nm, usz = struct.unpack_from('<B3xiQiIi', d, 0x20 + 28 * i)
         if n != usz: red(f'{label}: BND3 entry {i} is compressed ({n:#x} of {usz:#x} bytes)')
-        name = d[nm:d.index(b'\0', nm)].decode('shift-jis', 'replace').replace('\\', '/')
+        z = d.find(b'\0', nm)
+        name = d[nm:(z if z >= 0 else len(d))].decode('shift-jis', 'replace').replace('\\', '/')
         yield name.split('/Source/', 1)[-1], d[off:off + n]
 
 def bdt_shaders(path, rel, ents, out):
@@ -1343,7 +1360,7 @@ def zs_dicts(romfs):
 def unzs(path):
     """A zstd file decompressed: frames without a dictionary as they are, frames that name one with that dictionary from ZDICTS. The zstd module, not the zstd command: Windows has no
     such command (Mario vs. Donkey Kong's .zs shaders stopped the split there), and the porter already requires the module"""
-    d = read_whole(path)
+    d = read_whole(path, map_ok=False)   # a frame is decompressed whole: it has to fit in memory
     fhd = d[4] if len(d) > 5 and d[:4] == bytes.fromhex('28b52ffd') else 0
     n, o = (0, 1, 2, 4)[fhd & 3], 6 - (fhd >> 5 & 1)   # dictionary ID size; it follows the window descriptor, which single-segment frames omit
     did = int.from_bytes(d[o:o + n], 'little')
@@ -1477,8 +1494,8 @@ def scan_blob(d, label, out):
     for m in re.finditer(b'BNSH\0\0\0\0', d):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
-    if MGFX in d: out.extend(mgfx_shaders(d, label))
-    if b'SLCT' in d: out.extend(slct_loose(d, label))   # Monolith SLCTs outside an HCPS (Xenoblade Chronicles 3's main)
+    if has(d, MGFX): out.extend(mgfx_shaders(d, label))
+    if has(d, b'SLCT'): out.extend(slct_loose(d, label))   # Monolith SLCTs outside an HCPS (Xenoblade Chronicles 3's main)
 
 def group(label):
     """source group (second half of the package file name)"""
@@ -1760,18 +1777,18 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if head[:4] == ZSTD_MAGIC else read_whole(path)   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib, before the shader prefilter
-    if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC): d = unsized(d, '/' + rel)   # a size-prefixed frame (unsized): Kirby and the Forgotten Land keeps its BNSH in 7,201 .cmp files; read raw, the split found 121 of its 27,297 shaders
+    if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC) and not isinstance(d, mmap.mmap): d = unsized(d, '/' + rel)   # a size-prefixed frame (unsized): Kirby and the Forgotten Land keeps its BNSH in 7,201 .cmp files; read raw, the split found 121 of its 27,297 shaders (a mapped file is not copied for it)
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
+    elif not has(d, b'BNSH\0\0\0\0') and not has(d, b'BAHS') and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and has(d, b'Yaz0')) and not has(d, b'\x91\x68\x86\x19') and not has(d, MGFX): return rel, {}, set(), {}   # a SARC may hold Yaz0 members
     else:
         scan_blob(d, '/' + rel, found)
         # whole GLSLC outputs in a file no other reader takes (FINAL FANTASY TACTICS - The Ivalice Chronicles: its engine's technique files, resources_nx/…/shader/*.tec, 261 outputs beside
         # main's 49). Metroid Dread's MSHD files hold GLSLC outputs too, which mshd_shaders already reads; no other profile's loose files hold any
-        if not found and d[:4] != b'MSHD' and b'\x91\x68\x86\x19' in d: found += glslc_shaders(d, '/' + rel, need=False)
+        if not found and d[:4] != b'MSHD' and has(d, b'\x91\x68\x86\x19'): found += glslc_shaders(d, '/' + rel, need=False)
     return rel, uniq_keys(found), var_pairs(found), trees
 
 def uniq_keys(found):
@@ -1824,7 +1841,7 @@ def main():
         # calls glslcCompile in a module it loads (Fire Emblem: Three Houses; profile_guess.py shader_sources). Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it
         cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')
         names = sorted(f for f in os.listdir(cap) if f.endswith('.glslc')) if os.path.isdir(cap) else []
-        if not names and img.count(b'#version ') and 'glslcCompile' in main_imports(img) and glslc_module(os.path.dirname(os.path.abspath(mainnso))):
+        if not names and has(img, b'#version ') and 'glslcCompile' in main_imports(img) and glslc_module(os.path.dirname(os.path.abspath(mainnso))):
             print(f'[RED] main holds GLSL sources and imports glslcCompile, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
         for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
         # Unreal Engine shader code archives decoded on the Mac (uepak.py): <version dir>/ue_shaders, or DM_UE_SHADERS; needed when the RomFS has Unreal paks

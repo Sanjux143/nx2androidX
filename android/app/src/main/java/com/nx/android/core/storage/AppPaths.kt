@@ -19,4 +19,5 @@ class AppPaths @Inject constructor(
     val tmp = File(files, "tmp")
     val ports = File(files, "ports")
     val work = File(files, "work")
+    val runtimes = File(files, "runtimes")   // the games' runtimes, one folder per title ID (the launch loads it in place)
 }

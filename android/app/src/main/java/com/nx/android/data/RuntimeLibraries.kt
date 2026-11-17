@@ -10,6 +10,8 @@ object RuntimeLibraries {
 
     fun copyForLaunch(port: Ported, destination: File) {
         destination.mkdirs()
+        // A pack made by the older runtime update keeps its runtime in a .runtime- folder; the current
+        // one puts it back in the pack's own places, where the hooks sit beside the drivers.
         val generation = port.host.parentFile?.name?.startsWith(".runtime-") == true
         val drivers = File(port.pack, "drivers")
         val hookDir = if (generation) port.host.parentFile!! else drivers

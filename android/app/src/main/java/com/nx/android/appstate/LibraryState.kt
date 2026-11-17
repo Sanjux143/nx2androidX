@@ -11,6 +11,7 @@ import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameStatus
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.PackMover
+import com.nx.android.domain.PortablePack
 import com.nx.android.data.AppLog
 import com.nx.android.domain.Ported
 import java.io.File
@@ -133,9 +134,11 @@ class LibraryState @Inject constructor(private val port: PortState,
     /**
      * 删掉一个游戏：把它移出游戏库，删掉它的构建数据（数据包、工作区、半成品包）。
      * 游戏源文件是玩家的，不碰。正在构建或正在运行时不动任何东西。
+     *
+     * 导入的游戏不一样：那个文件夹是玩家的文件，App 只是认了它 —— 移出只忘路径，文件原地不动。
      */
     fun remove(e: GameEntry): GameCleanup.Result {
-        val result = operations.remove(e)
+        val result = if (e.isImported) operations.removeImported(e) else operations.remove(e)
         if (result.outcome !in setOf(GameCleanup.Outcome.BUSY_PORTING, GameCleanup.Outcome.BUSY_RUNNING, GameCleanup.Outcome.BUSY_MOVING)) rescan()
         return result
     }
@@ -156,6 +159,36 @@ class LibraryState @Inject constructor(private val port: PortState,
         operations.movePack(e, targetDir, onProgress).also { if (it.ok) rescan() }
 
     fun moveBlocked(e: GameEntry): GameCleanup.Outcome? = operations.moveBlocked(e)
+
+    /**
+     * 导出一个完成的移植：一个文件夹（数据包 + 散装的游戏文件）。
+     *
+     * 导出不动 App 里的任何东西：游戏照常能玩。
+     */
+    fun exportPack(e: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit = {}): PortablePack.Result =
+        operations.exportPack(e, targetDir, onProgress)
+
+    /**
+     * 导入一个别人导出的文件夹：登记它的路径，游戏在它原来的地方原地跑。
+     *
+     * 那个文件夹里的游戏数据一个字节都不动；App 只把这个包自己的管理文件（env.txt）指到它现在的位置。
+     */
+    fun importPack(dir: File): PortablePack.Validation {
+        val validation = PortablePack.validate(dir)
+        if (!validation.ok) return validation
+        val registered = operations.registerImported(dir, validation)
+        if (registered == null) return PortablePack.Validation(false, "already_imported", validation.titleId, validation.name)
+        rescan()
+        return validation
+    }
+
+    /** 移出一个导入的游戏：只忘路径，那个文件夹里的文件原地不动 */
+    fun forgetImported(e: GameEntry): Boolean {
+        val path = e.imported?.path ?: return false
+        operations.forgetImported(path)
+        rescan()
+        return true
+    }
 
     /** 卡不在时够不着的包：路径还记得，那个卷却不在了（删不到，要说实话） */
     fun unreachablePacks(e: GameEntry): List<File> = libraryRepository.unreachablePacks(e)

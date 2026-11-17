@@ -31,7 +31,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SdCard
@@ -75,7 +77,6 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nx.android.R
 import com.nx.android.appstate.LibraryState
-import com.nx.android.appstate.PlayerState
 import com.nx.android.appstate.PortState
 import com.nx.android.domain.drivers.Driver
 import com.nx.android.data.GameIcon
@@ -90,6 +91,7 @@ import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameStatus
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.PackMover
+import com.nx.android.domain.PortablePack
 import com.nx.android.domain.Ported
 import com.nx.android.domain.saves.SaveRepository
 import com.nx.android.domain.saves.SaveSource
@@ -130,14 +132,10 @@ private fun statusLabel(s: GameStatus): String = when (s) {
 private fun experimentalTag(ported: Ported?): String? =
     if (ported?.status == "experimental") stringResource(R.string.lib_experimental) else null
 
-@Composable
-private fun reportTag(ported: Ported?): String? =
-    if (ported?.needsRuntimeUpdate == true) stringResource(R.string.lib_needs_report) else null
-
 private fun versionTag(ported: Ported?): String? =
     ported?.display?.trim()?.takeIf { it.isNotEmpty() }
 
-private enum class Removal { CACHE, DELETE }
+private enum class Removal { CACHE, DELETE, FORGET }
 
 /** 一次破坏性动作的请求：做什么、要删哪些东西、哪些够不着（卡不在时） */
 private data class RemovalRequest(val kind: Removal, val plan: GameCleanup.Plan,
@@ -148,22 +146,22 @@ private data class RemovalRequest(val kind: Removal, val plan: GameCleanup.Plan,
  * 由页面的根在最上层画（MainScreen），它的遮罩要盖住顶栏。
  */
 @Composable
-fun GameDetailRoute(lib: LibraryState, port: PortState, player: PlayerState,
+fun GameDetailRoute(lib: LibraryState, port: PortState,
                     e: GameEntry, installedDrivers: List<Driver>, actions: AppActions, onGoBuilds: () -> Unit,
                     onRequest: (PickerRequest) -> Unit, onClose: () -> Unit, navActive: Boolean = false) {
-    val viewModel: GameDetailViewModel = hiltViewModel(key = "game-detail-${e.titleId}")
+    val viewModel: GameDetailViewModel = hiltViewModel(key = "game-detail-${e.key}")
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(e.titleId, e.pack?.pack) { viewModel.open(e.titleId, e.pack?.pack) }
     DisposableEffect(viewModel, e.titleId) {
         onDispose { viewModel.close(e.titleId) }
     }
-    GameDetailScreen(lib, port, player, e, installedDrivers, viewModel.saveRepository, viewModel.saveIo,
+    GameDetailScreen(lib, port, e, installedDrivers, viewModel.saveRepository, viewModel.saveIo,
         uiState, viewModel::selectLanguage, viewModel::selectDriver, actions, onGoBuilds, onRequest, onClose,
         navActive = navActive)
 }
 
 @Composable
-private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerState,
+private fun GameDetailScreen(lib: LibraryState, port: PortState,
                         e: GameEntry, installedDrivers: List<Driver>, saveRepository: SaveRepository,
                         saveIo: SaveIo, detailState: GameDetailUiState,
                         onSelectLanguage: (String?) -> Unit, onSelectDriver: (String?) -> Unit,
@@ -188,11 +186,14 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
     var moveProgress by remember { mutableStateOf<PackMover.Progress?>(null) }
     // 删除/清缓存正在进行（遮罩挡着，不让乱点）
     var removing by remember { mutableStateOf(false) }
+    // 导出：把这个移植变成一个文件夹（卡上写入很慢，玩家要看得见还在动）
+    var exporting by remember { mutableStateOf(false) }
+    var exportProgress by remember { mutableStateOf<PortablePack.Progress?>(null) }
     // 正在搬移/删除时：返回键不做事（别把进行中的动作打断，面板也别关）
-    BackHandler(enabled = moving || removing) { }
-    BackHandler(enabled = !(moving || removing)) { onClose() }
+    BackHandler(enabled = moving || removing || exporting) { }
+    BackHandler(enabled = !(moving || removing || exporting)) { onClose() }
     // 手柄的返回键：跟系统的返回键一条路（正在搬移/删除时同样不做事）
-    OnNavKey(enabled = navActive && !moving && !removing) { key ->
+    OnNavKey(enabled = navActive && !moving && !removing && !exporting) { key ->
         if (key == NavKey.Back) onClose()
     }
 
@@ -243,7 +244,12 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
         }
         scope.launch {
             val p = withContext(Dispatchers.IO) {
-                if (kind == Removal.CACHE) lib.planCache(e) else lib.planRemoval(e)
+                when (kind) {
+                    Removal.CACHE -> lib.planCache(e)
+                    // 移出导入的包：什么都不删（那个文件夹是玩家的文件），只是把它从库里拿掉
+                    Removal.FORGET -> GameCleanup.Plan(emptyList(), workspaceKnown = true)
+                    else -> lib.planRemoval(e)
+                }
             }
             // 卡不在时够不着的包：先说清楚（不然玩家以为全删干净了）
             val unreachable = withContext(Dispatchers.IO) { lib.unreachablePacks(e) }
@@ -258,17 +264,30 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
         removing = true
         scope.launch {
             val r = withContext(Dispatchers.IO) {
-                if (req.kind == Removal.CACHE) lib.clearCache(e) else lib.remove(e)
+                when (req.kind) {
+                    Removal.CACHE -> lib.clearCache(e)
+                    Removal.FORGET -> {
+                        // 只忘路径：那个文件夹里的文件原地不动
+                        if (lib.forgetImported(e)) GameCleanup.Result(GameCleanup.Outcome.DONE)
+                        else GameCleanup.Result(GameCleanup.Outcome.FAILED)
+                    }
+                    else -> lib.remove(e)
+                }
             }
             removing = false
+            // 游戏从库里删除：它的桌面图标置灰，点下去不再启动（清构建缓存不动桌面图标）
+            if (r.outcome == GameCleanup.Outcome.DONE && (req.kind == Removal.DELETE || req.kind == Removal.FORGET)) {
+                com.nx.android.app.GameShortcuts.disable(context, e.titleId, locale.str(R.string.shortcut_disabled))
+            }
             actions.onToast(
                 when (r.outcome) {
                     GameCleanup.Outcome.DONE -> {
                         // 游戏没了，这个抽屉也就没有意义了
-                        if (req.kind == Removal.DELETE) onClose()
+                        if (req.kind == Removal.DELETE || req.kind == Removal.FORGET) onClose()
                         val done = when (req.kind) {
                             Removal.CACHE -> locale.str(R.string.lib_remove_cache_done)
-                            Removal.DELETE -> locale.str(R.string.lib_remove_done)
+                            Removal.FORGET -> locale.str(R.string.lib_forget_done)
+                            else -> locale.str(R.string.lib_remove_done)
                         }
                         if (r.workspaceKnown) done else locale.str(
                             if (req.kind == Removal.CACHE) R.string.lib_remove_cache_workspace_unknown
@@ -326,6 +345,32 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                 else locale.str(R.string.lib_pack_move_failed, r.failure ?: "")
             )
         }
+    }
+
+    /** 真的导出（后台线程：卡上写入很慢） */
+    fun doExport(target: File) {
+        exporting = true
+        exportProgress = null
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { lib.exportPack(e, target) { exportProgress = it } }
+            exporting = false
+            exportProgress = null
+            actions.onToast(
+                if (r.ok) locale.str(R.string.lib_pack_export_done, r.folder)
+                else locale.str(R.string.lib_pack_export_failed, r.failure ?: "")
+            )
+        }
+    }
+
+    /**
+     * 导出：玩家选一个落点，App 把这个移植写成一个文件夹（数据包 + 散装的游戏文件）。
+     *
+     * 导出不动 App 里的任何东西：这个游戏照常能玩。
+     */
+    fun askExport() {
+        onRequest(PickerRequest(PickerMode.DIR, emptySet(), File("/storage"),
+            locale.str(R.string.lib_pack_export_pick),
+            onPicked = { target -> doExport(target) }))
     }
 
     /** 游戏运行日志：宿主把它写在了数据包里（上一轮的在 log.prev.txt），打成日志包再发出去 */
@@ -388,7 +433,7 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        (listOfNotNull(titleId, versionTag(ported), statusLabel(status), experimentalTag(ported), reportTag(ported)) +
+                        (listOfNotNull(titleId, versionTag(ported), statusLabel(status), experimentalTag(ported)) +
                             com.nx.android.feature.library.needsTags(lib.profileOf(titleId), ported)).joinToString("  ·  "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -414,23 +459,50 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                                     else shareGameLog(p)
                                 },
                             )
+                            // 发送到桌面：桌面快捷方式（pin shortcut），点击与库页卡片走同一扇门（已完成的游戏才有）
                             androidx.compose.material3.DropdownMenuItem(
-                                text = { Text(locale.str(if (packOnCard != null) R.string.lib_pack_move_back else R.string.lib_pack_move_to_card)) },
-                                leadingIcon = { Icon(Icons.Filled.SdCard, null, Modifier.size(18.dp)) },
-                                onClick = { menuOpen = false; askMove() },
+                                text = { Text(locale.str(R.string.lib_pin_shortcut)) },
+                                leadingIcon = { Icon(Icons.Filled.Home, null, Modifier.size(18.dp)) },
+                                onClick = {
+                                    menuOpen = false
+                                    actions.onSendToDesktop(e)
+                                },
                             )
-                            if (!cacheLocked) {
+                            // 导入的包已经在玩家自己挑的目录里了：搬它没有意义
+                            if (!e.isImported) {
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text(locale.str(if (packOnCard != null) R.string.lib_pack_move_back else R.string.lib_pack_move_to_card)) },
+                                    leadingIcon = { Icon(Icons.Filled.SdCard, null, Modifier.size(18.dp)) },
+                                    onClick = { menuOpen = false; askMove() },
+                                )
+                            }
+                            // 导出：把这个移植变成一个文件夹（数据包 + 散装的游戏文件）
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text(locale.str(R.string.lib_pack_export_action)) },
+                                leadingIcon = { Icon(Icons.Filled.FolderOpen, null, Modifier.size(18.dp)) },
+                                onClick = { menuOpen = false; askExport() },
+                            )
+                            if (!cacheLocked && !e.isImported) {
                                 androidx.compose.material3.DropdownMenuItem(
                                     text = { Text(locale.str(R.string.lib_remove_cache_action)) },
                                     leadingIcon = { Icon(Icons.Filled.CleaningServices, null, Modifier.size(18.dp)) },
                                     onClick = { menuOpen = false; askRemoval(Removal.CACHE) },
                                 )
                             }
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text(locale.str(R.string.lib_remove_action), color = NxPalette.Danger) },
-                                leadingIcon = { Icon(Icons.Filled.Delete, null, Modifier.size(18.dp), tint = NxPalette.Danger) },
-                                onClick = { menuOpen = false; askRemoval(Removal.DELETE) },
-                            )
+                            if (e.isImported) {
+                                // 移出：只忘路径，那个文件夹里的文件原地不动（那是玩家的文件）
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text(locale.str(R.string.lib_forget_action), color = NxPalette.Danger) },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, null, Modifier.size(18.dp), tint = NxPalette.Danger) },
+                                    onClick = { menuOpen = false; askRemoval(Removal.FORGET) },
+                                )
+                            } else {
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text(locale.str(R.string.lib_remove_action), color = NxPalette.Danger) },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, null, Modifier.size(18.dp), tint = NxPalette.Danger) },
+                                    onClick = { menuOpen = false; askRemoval(Removal.DELETE) },
+                                )
+                            }
                         }
                     }
                 }
@@ -456,6 +528,10 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                     }, modifier = Modifier.fillMaxWidth())
                 }
                 status == GameStatus.DONE -> {
+                    // 导入的包：文件在玩家自己挑的目录里，App 不拥有它
+                    if (e.isImported) {
+                        Hint(locale.str(R.string.lib_pack_imported_hint), size = 11.sp)
+                    }
                     if (ported == null) {
                         Hint(locale.str(R.string.lib_artifact_missing_state))
                     } else {
@@ -466,20 +542,12 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         Spacer(Modifier.height(10.dp))
                         SaveRows(ported, e.label, saveRepository, saveIo, actions.onToast)
                         Spacer(Modifier.height(6.dp))
-                        // 别的游戏在跑时锁住这个：跑着的那个自己不受限（点它的「运行」是回到它）
-                        val locked = player.running && player.titleId != ported.titleId
-                        if (locked) Hint(locale.str(R.string.lib_close_current_game, player.name))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            // An incompatible player interface offers a runtime update first.
-                            if (ported.needsRuntimeUpdate) {
-                                CapsuleButton(locale.str(R.string.runtime_update), {
-                                    actions.onRun(ported.pack, e.label)
-                                }, modifier = Modifier.weight(1f), enabled = !locked)
-                            } else {
-                                CapsuleButton(locale.str(R.string.builds_run_action), {
-                                    actions.onRun(ported.pack, e.label)
-                                }, modifier = Modifier.weight(1f), enabled = !locked)
-                            }
+                            // 一个「运行」：运行库过期/缺失也点它——门放行后游戏页的 Loading 自己重建。
+                            // 占用不在这里拦：点「运行」由门统一裁决（在跑的带回、别的拒绝并说明）。
+                            CapsuleButton(locale.str(R.string.builds_run_action), {
+                                actions.onRun(ported.pack, e.label)
+                            }, modifier = Modifier.weight(1f))
                             CapsuleButton(locale.str(R.string.lib_build_action), {
                                 build()
                             }, modifier = Modifier.weight(1f))
@@ -488,28 +556,43 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                 }
                 else -> {
                     if (ported != null) {
-                        Hint(locale.str(R.string.lib_needs_report))
-                        CapsuleButton(locale.str(R.string.runtime_update), {
+                        // 包在而运行库不齐（过期/缺失）：一样的「运行」，游戏页的 Loading 自己补齐
+                        CapsuleButton(locale.str(R.string.builds_run_action), {
                             actions.onRun(ported.pack, e.label)
-                        }, modifier = Modifier.fillMaxWidth(), enabled = !port.running && !player.running)
+                        }, modifier = Modifier.fillMaxWidth())
                         Spacer(Modifier.height(8.dp))
                     }
-                    Hint(if (e.work != null && e.pack == null) locale.str(R.string.lib_residual_hint)
-                         else locale.str(R.string.lib_needs_build_hint))
+                    // 导入的包够不着了（卡不在？）：说清楚，别让它看着像一个没移植的游戏
+                    if (e.isImported && ported == null) {
+                        Hint(locale.str(R.string.lib_pack_imported_unreachable), size = 11.sp)
+                    } else {
+                        Hint(if (e.work != null && e.pack == null) locale.str(R.string.lib_residual_hint)
+                             else locale.str(R.string.lib_needs_build_hint))
+                    }
                     Spacer(Modifier.height(8.dp))
                     CapsuleButton(locale.str(R.string.lib_build_action), {
                         build()
                     }, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // 清构建缓存：游戏照常能玩，只把能再生的东西清掉
-                        // （数据包读的是工作区里的 RomFS 时不行：那种卡只留删除游戏）
-                        if (!cacheLocked) {
-                            QuietButton(locale.str(R.string.lib_remove_cache_action),
-                                { askRemoval(Removal.CACHE) }, modifier = Modifier.weight(1f))
+                    // 导入的游戏够不着了：它没法玩，但玩家得能把它从库里拿掉
+                    if (e.isImported) {
+                        Spacer(Modifier.height(8.dp))
+                        QuietButton(locale.str(R.string.lib_forget_action),
+                            onClick = { askRemoval(Removal.FORGET) },
+                            modifier = Modifier.fillMaxWidth())
+                    }
+                    // 导入的游戏：它没有构建缓存可清，也没有数据包可删 —— 只有「移出」
+                    if (!e.isImported) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            // 清构建缓存：游戏照常能玩，只把能再生的东西清掉
+                            // （数据包读的是工作区里的 RomFS 时不行：那种卡只留删除游戏）
+                            if (!cacheLocked) {
+                                QuietButton(locale.str(R.string.lib_remove_cache_action),
+                                    { askRemoval(Removal.CACHE) }, modifier = Modifier.weight(1f))
+                            }
+                            QuietButton(locale.str(R.string.lib_remove_action),
+                                { askRemoval(Removal.DELETE) }, modifier = Modifier.weight(1f))
                         }
-                        QuietButton(locale.str(R.string.lib_remove_action),
-                            { askRemoval(Removal.DELETE) }, modifier = Modifier.weight(1f))
                     }
                 }
             }
@@ -576,18 +659,23 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                     else locale.str(R.string.lib_remove_item_pack)
                 GameCleanup.Kind.WORKSPACE -> locale.str(R.string.lib_remove_item_workspace)
                 GameCleanup.Kind.PARTIAL -> locale.str(R.string.lib_remove_item_partial)
+                GameCleanup.Kind.RUNTIME -> locale.str(R.string.lib_remove_item_runtime)
             }
         }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { removal = null },
             title = {
-                Text(locale.str(if (req.kind == Removal.CACHE) R.string.lib_remove_cache_confirm_title
-                else R.string.lib_remove_confirm_title))
+                Text(locale.str(when (req.kind) {
+                    Removal.CACHE -> R.string.lib_remove_cache_confirm_title
+                    Removal.FORGET -> R.string.lib_forget_confirm_title
+                    else -> R.string.lib_remove_confirm_title
+                }))
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         when {
+                            req.kind == Removal.FORGET -> locale.str(R.string.lib_forget_what)
                             req.kind == Removal.CACHE && req.plan.workspaceInUse -> locale.str(R.string.lib_remove_cache_workspace_in_use)
                             req.kind == Removal.CACHE && items.isEmpty() -> locale.str(R.string.lib_remove_cache_nothing)
                             req.kind == Removal.CACHE && status == GameStatus.DONE -> locale.str(R.string.lib_remove_cache_what_done)
@@ -601,6 +689,14 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                     items.forEach {
                         Text("· $it", style = MaterialTheme.typography.bodySmall,
                              color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    // 移出导入的包：那个文件夹在哪，写清楚（文件留在原地）
+                    if (req.kind == Removal.FORGET) {
+                        e.imported?.let {
+                            Text(locale.str(R.string.lib_forget_path, it.path),
+                                 style = MaterialTheme.typography.bodySmall,
+                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                     // 卡不在：卡上那份这次删不到，先说清楚
                     if (req.unreachable.isNotEmpty()) {
@@ -616,7 +712,11 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = { doRemoval() }) {
-                    Text(locale.str(if (req.kind == Removal.CACHE) R.string.common_clear else R.string.common_delete),
+                    Text(locale.str(when (req.kind) {
+                        Removal.CACHE -> R.string.common_clear
+                        Removal.FORGET -> R.string.lib_forget_confirm_action
+                        else -> R.string.common_delete
+                    }),
                          color = NxPalette.Danger)
                 }
             },
@@ -628,8 +728,8 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
         )
     }
 
-    // 全屏遮罩：搬移/删除进行中挡住整个屏幕——这些动作要一分钟上下，不能让人乱点
-    if (moving || removing) {
+    // 全屏遮罩：搬移/删除/导出进行中挡住整个屏幕——这些动作要一分钟上下，不能让人乱点
+    if (moving || removing || exporting) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -641,7 +741,25 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (moving) {
+                if (exporting) {
+                    val p = exportProgress
+                    if (p != null) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { p.fraction },
+                            modifier = Modifier.width(220.dp),
+                        )
+                    } else {
+                        androidx.compose.material3.CircularProgressIndicator()
+                    }
+                    Text(locale.str(R.string.lib_pack_export_working),
+                         style = MaterialTheme.typography.bodyMedium)
+                    p?.let {
+                        Text(locale.str(R.string.lib_pack_export_progress,
+                                        sizeText(it.bytes), sizeText(it.totalBytes)),
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else if (moving) {
                     val p = moveProgress
                     if (p != null) {
                         androidx.compose.material3.LinearProgressIndicator(
@@ -749,7 +867,7 @@ private fun RunOptions(
                     note = locale.str(R.string.lib_imported)
                     onToast(note)
                 }.onFailure {
-                    note = locale.str(R.string.lib_import_failed, failureText(locale, it))
+                    note = locale.str(R.string.lib_pack_import_failed, failureText(locale, it))
                     onToast(note)
                 }
             }

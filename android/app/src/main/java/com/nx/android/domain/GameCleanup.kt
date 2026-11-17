@@ -5,7 +5,8 @@ import java.util.Locale
 
 /**
  * 一个游戏留在手机上的构建数据：数据包（移植成功时）、工作区（移植器解包重写的地方，几个 GB）、
- * 半成品包（打包阶段被打断留下的）。删一个游戏就是删这些——游戏源文件是玩家自己的，不碰。
+ * 半成品包（打包阶段被打断留下的）、统一目录里那份运行库（runtimes/<title ID>，唯一正本，不删
+ * 就是永久孤儿）。删一个游戏就是删这些——游戏源文件是玩家自己的，不碰。
  *
  * 纯文件操作，不依赖 Android，测试跑在 JVM 上。
  */
@@ -21,7 +22,7 @@ object GameCleanup {
     )
 
     /** 要删的东西 */
-    enum class Kind { PACK, WORKSPACE, PARTIAL }
+    enum class Kind { PACK, WORKSPACE, PARTIAL, RUNTIME }
 
     data class Target(val file: File, val kind: Kind)
 
@@ -54,11 +55,13 @@ object GameCleanup {
      * @param keepPartials 留着半成品包：另一个构建正在写它，删了就把那次构建杀了
      * @param workspaceInUse 数据包读的是工作区里的 RomFS：单独删工作区会让游戏跑不起来
      */
-    fun plan(titleId: String?, packs: List<File>, workspace: File?, partials: List<File>, workspaceInUse: Boolean = false): Plan {
+    fun plan(titleId: String?, packs: List<File>, workspace: File?, partials: List<File>,
+             workspaceInUse: Boolean = false, runtime: File? = null): Plan {
         val targets = ArrayList<Target>()
         packs.forEach { targets += Target(it, Kind.PACK) }
         workspace?.let { targets += Target(it, Kind.WORKSPACE) }
         partials.forEach { targets += Target(it, Kind.PARTIAL) }
+        runtime?.let { targets += Target(it, Kind.RUNTIME) }
         return Plan(targets, workspaceKnown = titleId != null, workspaceInUse = workspaceInUse)
     }
 

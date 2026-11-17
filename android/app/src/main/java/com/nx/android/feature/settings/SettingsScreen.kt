@@ -17,12 +17,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,6 +53,7 @@ import com.nx.android.app.AppActions
 import com.nx.android.core.ui.LocalAppLocale
 import com.nx.android.core.ui.components.ActionRow
 import com.nx.android.core.ui.components.ChoiceRow
+import com.nx.android.core.ui.components.CloseIcon
 import com.nx.android.core.ui.components.FirmwareHint
 import com.nx.android.core.ui.components.FirmwareRow
 import com.nx.android.core.ui.components.Hint
@@ -161,22 +159,6 @@ fun SettingsScreen(ob: OnboardingState, drivers: List<Driver>, driverRepository:
                 }
             }
         }
-    }
-}
-
-/** 页头的关闭：一个圆按钮里的叉 */
-@Composable
-private fun CloseIcon(onClick: () -> Unit) {
-    Box(
-        Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick).padding(10.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            Icons.Filled.Close,
-            stringResource(R.string.common_close),
-            Modifier.size(22.dp),
-            tint = MaterialTheme.colorScheme.onBackground,
-        )
     }
 }
 

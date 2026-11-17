@@ -103,6 +103,35 @@ class EnvCheckTest {
     }
 
     @Test
+    fun `the chip is a hint when the game profiles are not imported`() {
+        // App 不带档案：更新过的玩家一个档案都没有，移植只能盲猜，所以是黄的，不是绿的
+        assertEquals(
+            EnvCheck.Chip.HINT,
+            EnvCheck.chip(envReady = true, keysOk = true, profilesImported = false),
+        )
+    }
+
+    @Test
+    fun `the chip is ready again once the game profiles are imported`() {
+        assertEquals(
+            EnvCheck.Chip.READY,
+            EnvCheck.chip(envReady = true, keysOk = true, profilesImported = true),
+        )
+    }
+
+    @Test
+    fun `the missing profiles do not hide a missing environment`() {
+        assertEquals(
+            EnvCheck.Chip.NOT_READY,
+            EnvCheck.chip(envReady = false, keysOk = true, profilesImported = false),
+        )
+        assertEquals(
+            EnvCheck.Chip.NOT_READY,
+            EnvCheck.chip(envReady = true, keysOk = false, profilesImported = false),
+        )
+    }
+
+    @Test
     fun `a row that passed is ok`() {
         val r = rows("""[{"name": "Python", "ok": true, "detail": "3.13.5", "required": true}]""").first()
         assertEquals(EnvCheck.Level.OK, r.level)

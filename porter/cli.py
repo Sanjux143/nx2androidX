@@ -8,6 +8,8 @@ def _parser():
     sub = ap.add_subparsers(dest='cmd', required=True)
     d = sub.add_parser('doctor', help='check the tools a port needs'); d.add_argument('--json', action='store_true'); d.add_argument('-k', '--keys')
     p = sub.add_parser('profiles', help='list the games the tool can port'); p.add_argument('--all', action='store_true', help='also the iOS profiles not ported to Android'); p.add_argument('--json', action='store_true')
+    p.add_argument('action', nargs='?', choices=('list', 'import'), default='list', help='list the profiles, or import a package of them')
+    p.add_argument('package', nargs='?', help='the profiles package to import (a zip of the game profile folders), with "import"')
     i = sub.add_parser('inspect', help='what a game holds and whether it can be ported'); i.add_argument('folder', help='the game file (NSP / XCI / NSZ / XCZ) or the folder with it'); i.add_argument('--json', action='store_true')
     i.add_argument('-k', '--keys', help='prod.keys (default: the configured one): reads the title ID of a dump with no [title ID] in its name')
     po = sub.add_parser('port', help='make the data pack (the phone app runs the game)')
@@ -16,6 +18,9 @@ def _parser():
     po.add_argument('-o', '--out', help='folder for the data pack (default: the game folder)')
     po.add_argument('-p', '--version', default='', help='version to pack, v<N> (default: the newest in the folder)')
     po.add_argument('-l', '--language', default='', help='game language, a code or a name (default: English)')
+    po.add_argument('--language-preferred', default='',
+                    help="the language the device is set to (zh-CN, ko, ...): the pack follows it when the game has it. A wish, not a demand: "
+                         "the port never fails for it, and the game's own first language is packed when it does not have it")
     po.add_argument('--app-name', default='', help='the app\'s name on the device (default: the game\'s name)')
     mode = po.add_mutually_exclusive_group()
     mode.add_argument('--app', action='store_true', dest='app',
@@ -129,7 +134,17 @@ def cmd_doctor(a):
 
 
 def cmd_profiles(a):
-    from porter import profiles
+    from porter import profiles, profiles_layer
+    if a.action == 'import':
+        if not a.package:
+            print('porter profiles import <package.zip>', file=sys.stderr); return 2
+        try:
+            rec = profiles_layer.import_zip(a.package)
+        except profiles_layer.LayerError as e:
+            print(f'[RED] {e}', file=sys.stderr); return 2
+        print(f'imported {rec["count"]} game profile(s) (r{rec["revision"]}, {str(rec["commit"])[:8]}) into {profiles_layer.layer_dir()}')
+        return 0
+    profiles_layer.activate()
     rows = profiles.all_entries(android_only=not a.all)
     if a.json: _print_json([r.as_dict() for r in rows]); return 0
     for r in rows: print(f'{r.id}  {r.status:12} {r.name}' + (f'  ({r.tested})' if r.tested else ''))
@@ -193,6 +208,7 @@ def cmd_port(a):
         try: install.romfs_target(a.romfs_at)   # a folder the app cannot read fails now, not after the shaders
         except BuildError as e: print(e, file=sys.stderr); return 2
     opts = pipeline.Options(folder=Path(a.folder), keys=Path(a.keys) if a.keys else None, firmware=Path(a.firmware) if a.firmware else None, out=Path(a.out) if a.out else None, version=a.version, language=a.language,
+                                language_preferred=a.language_preferred,
                                 app_name=a.app_name, app=a.app, install=a.install, device=a.device, replace_signer=a.replace_signer, debug=a.debug, experimental=a.experimental, package=a.package, fps60=a.fps60, touch=a.touch, mt_replay=a.mt_replay, vulkan_driver=a.vulkan_driver,
                                 vulkan_driver_dir=a.vulkan_driver_dir, shared_font=a.shared_font,
                                 vercode_offset=offset, alias_headroom=a.alias_headroom, romfs_at=a.romfs_at, romfs_push=a.romfs_push, external_display=a.external_display, native_keyboard=a.native_keyboard, jobs=a.jobs, no_lsfg=a.no_lsfg)
@@ -326,4 +342,7 @@ def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt 
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
+    # The player's own game profiles (the package they imported) are found by every command that reads a profile
+    from porter import profiles_layer
+    profiles_layer.activate()
     return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'rebuild-runtime': cmd_rebuild_runtime, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves, 'driver': cmd_driver, 'host': cmd_driver}[a.cmd](a)

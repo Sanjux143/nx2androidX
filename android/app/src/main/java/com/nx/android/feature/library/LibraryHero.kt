@@ -30,10 +30,12 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nx.android.R
 import com.nx.android.core.ui.PreviewSurface
 import com.nx.android.core.ui.components.StatusDot
 import com.nx.android.core.ui.components.rememberGameIcon
@@ -175,6 +177,15 @@ private fun HeroTile(
                 if (status == GameStatus.PORTING) {
                     Text("${(portProgress * 100).toInt()}%", fontSize = 10.sp, color = statusColor(status))
                 }
+            }
+        }
+        // 导入的包：角上写明它是别人导来的（App 自己做的包没有这个标记）
+        if (entry.isImported) {
+            Surface(shape = RoundedCornerShape(50), color = NxPalette.Background.copy(alpha = 0.6f),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(6.dp)) {
+                Text(stringResource(R.string.lib_pack_imported_badge), fontSize = 10.sp,
+                     color = Color.White.copy(alpha = 0.85f),
+                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
             }
         }
     }

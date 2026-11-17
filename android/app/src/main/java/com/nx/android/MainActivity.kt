@@ -37,8 +37,10 @@ import com.nx.android.core.storage.AppPaths
 import androidx.core.content.FileProvider
 import com.nx.android.data.library.LibraryFileScanner
 import com.nx.android.domain.GameIdentity
+import com.nx.android.domain.LaunchDecision
 import com.nx.android.domain.LibraryLogic
-import com.nx.android.domain.RunAction
+import com.nx.android.domain.Ported
+import androidx.compose.runtime.snapshotFlow
 import com.nx.android.app.AppActions
 import com.nx.android.app.AppRoot
 import com.nx.android.input.GamepadScan
@@ -54,6 +56,10 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import java.io.File
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -81,7 +87,6 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var library: LibraryState
     @Inject lateinit var player: PlayerState
     @Inject lateinit var operations: com.nx.android.appstate.LibraryOperationCoordinator
-    @Inject lateinit var runtime: com.nx.android.appstate.RuntimeUpdateState
     @Inject lateinit var port: PortState
     @Inject lateinit var buildSessions: BuildSessionRepository
     @Inject lateinit var paths: AppPaths
@@ -129,12 +134,15 @@ class MainActivity : ComponentActivity() {
         if (port.phase == PortPhase.INTERRUPTED)
             port.history.firstOrNull { it.phase == PortPhase.INTERRUPTED }?.let(portCompletionCoordinator::complete)
         // 游戏在跑：游戏页是这个任务里压在库页上面的那一页——先把它顶到前面，再画库页（库页画在它下面，
-        // 玩家看不见，但游戏结束后它就在那儿）。判据直接问进程，不看 PlayerState.running：那个靠 2 秒
-        // 轮询，App 的进程刚起来时还是 false。
-        if (isLauncherEntry(intent) && Player.playProcessAlive(this)) com.nx.android.game.GameActivity.resume(this)
+        // 玩家看不见，但游戏结束后它就在那儿）。冷启动问一次进程：`:play` 活着就把游戏页顶回去。
+        if (isLauncherEntry(intent) && player.processAlive(this)) com.nx.android.game.GameActivity.resume(this)
+        // 桌面快捷方式的点击（冷启动这一条）：与库页卡片走同一扇门
+        if (intent?.action == com.nx.android.app.GameShortcuts.ACTION) {
+            intent.getStringExtra(com.nx.android.app.GameShortcuts.EXTRA_TITLE_ID)?.let { onShortcut(it) }
+        }
         setContent {
-            AppRoot(prefs, locale, port, library, player, onboarding, drivers, environmentSetup, actions,
-                launchTab, runtime, launchBuildId, padController,
+            AppRoot(prefs, locale, port, library, onboarding, drivers, environmentSetup, actions,
+                launchTab, launchBuildId, padController,
                 padCenterOpen = padCenterOpen, onPadCenter = { padCenterOpen = it })
         }
         // the small tools come with the app: an update brings new ones, and the phone has to get them
@@ -160,7 +168,7 @@ class MainActivity : ComponentActivity() {
         onSetKeys = { prefs.writeKeys(it); envCheck.refresh() },
         onStartPort = { file, cfg ->
             // 没有「所有文件访问」权限就读不到游戏文件（重装 App 后会掉）：移植会死在半个 Python 栈里，先说清楚
-            if (port.running || runtime.running || player.running || Player.playProcessAlive(this)) {
+            if (port.running) {
                 toast(locale.str(R.string.runtime_busy))
             } else if (file.canRead()) {
                 // 落位跟着这个游戏的数据包走：它在可移动卡上，新包就建在那儿（内部存储的那份不动）
@@ -173,42 +181,13 @@ class MainActivity : ComponentActivity() {
             }
         },
         onCancelPort = { PortService.cancel(this) },
-        onRun = { pack, name ->
-            // 运行一个完成的移植：这个游戏还活着就把它带回前台（不重启），否则拉起 :play
-            // （包是唯一真源，拷贝覆盖旧副本）
-            LibraryFileScanner.portFromPack(pack)?.let { ported ->
-                val action = LibraryLogic.runAction(
-                    running = player.running,
-                    runningTitleId = player.titleId,
-                    portTitleId = ported.titleId,
-                    processAlive = Player.playProcessAlive(this),
-                )
-                if (port.running || runtime.running) {
-                    toast(locale.str(R.string.runtime_busy))
-                } else if (ported.needsRuntimeUpdate) {
-                    if (player.running || Player.playProcessAlive(this)) toast(locale.str(R.string.runtime_busy))
-                    else updateRuntime(pack, name)
-                } else if (action == RunAction.RESUME) {
-                    com.nx.android.game.GameActivity.resume(this)
-                } else {
-                    prefs.put(PrefsStore.PLAYER_LAST_START, System.currentTimeMillis().toString())
-                    if (!operations.beginPlay(ported.titleId, name)) {
-                        toast(locale.str(R.string.runtime_busy))
-                        return@let
-                    }
-                    Player.run(this, ported, name) { ok ->
-                        if (!ok) {
-                            player.stop()
-                            toast(locale.str(R.string.main_cannot_run_no_host, pack.name) + "\n" + locale.str(R.string.runtime_play_failed))
-                        }
-                    }
-                }
-            } ?: toast(locale.str(R.string.main_cannot_run_not_a_pack, pack.name))
-        },
-        onUpdateRuntime = { pack, name -> updateRuntime(pack, name) },
-        onStopGame = {
-            player.stop()
-            com.nx.android.game.GameActivity.stop(this)
+        onRun = { pack, name -> runGate(pack, name) },
+        onSendToDesktop = { e ->
+            val ported = e.pack
+            if (ported == null) toast(locale.str(R.string.lib_artifact_missing))
+            else if (com.nx.android.app.GameShortcuts.request(this, ported, e.label)) {
+                toast(locale.str(R.string.shortcut_added))
+            } else toast(locale.str(R.string.shortcut_unsupported))
         },
         onToast = { toast(it) },
         version = { versionName() },
@@ -216,6 +195,8 @@ class MainActivity : ComponentActivity() {
         // 固件：整机级的一份，导入 zip 解到 App 的私有目录（可选项）
         firmware = { firmwareRepo.imported },
         onImportFirmware = { zip -> importFirmware(zip) },
+        // 游戏档案：玩家导入的档案包（App 不带档案），导入的是 App 私有目录里的那一份
+        onImportProfiles = { zip -> importProfiles(zip) },
         onClearFirmware = {
             firmwareRepo.clear()
             envCheck.refresh()   // the chip's colour follows it at once
@@ -288,16 +269,83 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun updateRuntime(pack: File, name: String) {
-        if (Player.playProcessAlive(this) || !operations.beginRuntimeUpdate(pack.absolutePath, name)) {
+    /**
+     * 导入游戏档案包：App 不带档案（几百 MB 的着色器表），玩家导入一份，移植器在自己的目录里找到它们。
+     * 导入是移植器做的（它知道档案包的格式），App 只把包放进自己的目录（客机进程看不见手机的存储）。
+     */
+    private fun importProfiles(zip: File) {
+        if (!zip.isFile) { toast(locale.str(R.string.profiles_import_failed, zip.name)); return }
+        envCheck.importProfiles(zip) { ok, message ->
+            if (ok) toast(locale.str(R.string.profiles_imported_toast, envCheck.profilesCount))
+            else toast(locale.str(R.string.profiles_import_failed, message.ifBlank { zip.name }))
+            envCheck.refresh()
+        }
+    }
+
+    /**
+     * 门：解析 → busy → START / RESUME / REFUSE。卡片、详情面板、桌面快捷方式都走这一条路，
+     * 同一个游戏从哪个入口进来结果都一样。
+     */
+    private fun runGate(pack: File, name: String) {
+        LibraryFileScanner.portFromPack(pack)?.let { ported ->
+            when (LibraryLogic.launchDecision(player.processAlive(this), player.currentTitleId(), ported.titleId)) {
+                // 跑的正是这一个：带回前台，不重启
+                LaunchDecision.RESUME -> com.nx.android.game.GameActivity.resume(this)
+                // 跑的是别的：把在跑的那个带回前台 + 说明，被点的这个不起
+                LaunchDecision.REFUSE -> {
+                    com.nx.android.game.GameActivity.resume(this)
+                    toast(if (player.currentName().isBlank()) locale.str(R.string.runtime_busy)
+                          else locale.str(R.string.lib_game_still_running, player.currentName()))
+                }
+                // 没有游戏在跑：全新启动
+                LaunchDecision.START -> launchStart(ported, name)
+            }
+        } ?: toast(locale.str(R.string.main_cannot_run_not_a_pack, pack.name))
+    }
+
+    /**
+     * 桌面快捷方式的点击（冷启动落在 onCreate，热启动落在 onNewIntent）：与库页卡片走同一扇门。
+     * 解析先按记住的包路径验证一次（库的记忆）——命中只是一次文件验证，不等全量扫描；没命中再等
+     * 库首次扫描完成（仿 launchTab 的等待）。扫完还没有，这个游戏就不在了（图标已置灰的路径）。
+     */
+    private fun onShortcut(titleId: String) {
+        if (resolveShortcutByMemory(titleId)) { if (!isTaskRoot) finish(); return }
+        lifecycleScope.launch {
+            val games = snapshotFlow { library.scanning to library.games }
+                .filter { (scanning, games) -> scanning || games.isNotEmpty() }   // 扫描中，或已经有卡
+                .map { (scanning, games) -> if (scanning) null else games }        // 扫描结束后交出结果
+                .filterNotNull()
+                .first()
+            val hit = games.firstOrNull { it.titleId.equals(titleId, ignoreCase = true) }?.pack
+            if (hit != null) runGate(hit.pack, hit.name)
+            else toast(locale.str(R.string.shortcut_disabled))
+            if (!isTaskRoot) finish()   // 叠在游戏页上面的那份多余实例退掉：任务里还是 游戏页 > 库页
+        }
+    }
+
+    /** 按记住的包路径验证一次（不等库扫描）：命中就过门 */
+    private fun resolveShortcutByMemory(titleId: String): Boolean {
+        val path = try { prefs.json(PrefsStore.LIB_PACKS).optString(titleId.uppercase()) } catch (_: Exception) { "" }
+        if (path.isEmpty()) return false
+        val ported = LibraryFileScanner.portFromPack(File(path)) ?: return false
+        if (!ported.titleId.equals(titleId, ignoreCase = true)) return false
+        runGate(ported.pack, ported.name)
+        return true
+    }
+
+    /**
+     * 门放行的 START：占用检查（构建占用着流水线）→ 账本标记（fail-safe 断言住在这里）→ 把包交给
+     * 游戏页。宿主的指纹检查与运行库重建都发生在游戏页自己的 prepare 里（旧版宿主在那儿就地重建）。
+     */
+    private fun launchStart(ported: Ported, name: String) {
+        if (port.running) {
             toast(locale.str(R.string.runtime_busy))
             return
         }
-        try {
-            RuntimeUpdateService.start(this)
-        } catch (error: Exception) {
-            AppLog.line("[RED] Runtime update could not start: ${error.message}")
-            runtime.finish(false)
+        prefs.put(PrefsStore.PLAYER_LAST_START, System.currentTimeMillis().toString())
+        player.markLaunched(ported.titleId, name)   // 冷启动读回的身份（进程活着时它就是答案）
+        Player.run(this, ported, name) { ok ->
+            if (!ok) toast(locale.str(R.string.main_cannot_run_no_host, ported.pack.name) + "\n" + locale.str(R.string.runtime_play_failed))
         }
     }
 
@@ -307,9 +355,12 @@ class MainActivity : ComponentActivity() {
         onboarding.batteryOk = batteryUnrestricted()   // so may the battery exemption
         // 回到前台：顶栏胶囊的两个事实重读一遍（玩家可能在后台改了文件）
         envCheck.refresh()
+        // 回到库页：卡片重扫一遍（游戏页的 prepare 会在背后升级包）
+        library.rescan()
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             val started = prefs.str(PrefsStore.PLAYER_LAST_START).toLongOrNull() ?: 0L
-            if (started > 0 && !Player.playProcessAlive(this)) {
+            // 崩溃检测也问账本：processAlive() 是账本给全 app 的同步出口（账本之外没有第二处进程判断）
+            if (started > 0 && !player.processAlive(this)) {
                 val manager = getSystemService(android.app.ActivityManager::class.java)
                 val crash = runCatching {
                     manager.getHistoricalProcessExitReasons(packageName, 0, 16).any {
@@ -420,7 +471,11 @@ class MainActivity : ComponentActivity() {
             launchTab = intent.getIntExtra(EXTRA_TAB, 0)
             launchBuildId = intent.getStringExtra(EXTRA_BUILD_ID).orEmpty()
         }
-        if (isLauncherEntry(intent) && Player.playProcessAlive(this)) com.nx.android.game.GameActivity.resume(this)
+        if (isLauncherEntry(intent) && player.processAlive(this)) com.nx.android.game.GameActivity.resume(this)
+        // 桌面快捷方式的点击（热启动这一条）
+        if (intent.action == com.nx.android.app.GameShortcuts.ACTION) {
+            intent.getStringExtra(com.nx.android.app.GameShortcuts.EXTRA_TITLE_ID)?.let { onShortcut(it) }
+        }
     }
 
     /**

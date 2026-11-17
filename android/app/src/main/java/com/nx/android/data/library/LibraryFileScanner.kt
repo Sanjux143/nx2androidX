@@ -54,12 +54,12 @@ object LibraryFileScanner {
      * The title ID of every recognizable pack in the ports folder. A missing host does not make the
      * pack disappear: the library must keep a card so the player can rebuild or delete it.
      */
-    fun outIndex(outDir: File): Map<String, Ported> {
+    fun outIndex(outDir: File, runtimes: File? = null): Map<String, Ported> {
         if (!outDir.isDirectory) return emptyMap()
         val out = HashMap<String, Ported>()
         for (d in outDir.listFiles() ?: return emptyMap()) {
             if (!d.isDirectory || !d.name.endsWith("-data")) continue
-            portFromPack(d)?.let {
+            portFromPack(d, runtimes)?.let {
                 val id = it.titleId.uppercase()
                 val chosen = LibraryLogic.preferPack(out[id], currentInternal = true, it, candidateInternal = true)
                 out[id] = chosen.first
@@ -70,9 +70,14 @@ object LibraryFileScanner {
 
     /**
      * The port metadata a data pack holds, or null when its manifest cannot identify a title. The host may
-     * be missing; [Ported.runnable] is the separate run-readiness check.
+     * be missing (a new-format pack keeps no host: the runtime lives in the app's runtimes folder, and the
+     * marker beside it says how it was built); [Ported.runnable] is the separate run-readiness check.
+     *
+     * [runtimes] is the app's private runtimes root: when it is given, the build marker of this game's
+     * folder is read into the [Ported] (the run-readiness of a new-format pack is decided from it). The
+     * pure reads (the gate's title-ID resolution) pass nothing and get none.
      */
-    fun portFromPack(pack: File): Ported? {
+    fun portFromPack(pack: File, runtimes: File? = null): Ported? {
         val man = try {
             org.json.JSONObject(File(pack, "nx2a-data.json").readText())
         } catch (e: Exception) {
@@ -82,6 +87,8 @@ object LibraryFileScanner {
         if (!id.matches(Regex("[0-9A-Fa-f]{16}"))) return null
         val host = File(pack, man.optString("host", "host/libdmplay.so"))
         if (!host.canonicalFile.toPath().startsWith(pack.canonicalFile.toPath())) return null
+        val hostDeclared = man.has("host")
+        val marker = if (!hostDeclared && runtimes != null) readMarker(File(runtimes, id.lowercase())) else null
         return Ported(pack = pack, host = host,
                       icon = File(pack, "icon.png").takeIf { it.isFile },
                       titleId = id, name = man.optString("name"),
@@ -90,7 +97,23 @@ object LibraryFileScanner {
                       display = man.optString("display"),
                       romfsAt = man.optString("romfs_at"),
                       graphics = man.optString("graphics"),
-                      lan = if (man.has("lan")) man.getBoolean("lan") else null)
+                      lan = if (man.has("lan")) man.getBoolean("lan") else null,
+                      hostDeclared = hostDeclared,
+                      noLsfg = if (man.has("no_lsfg")) man.optBoolean("no_lsfg") else null,
+                      profileH = man.optString("profile_h"),
+                      marker = marker)
+    }
+
+    /** the build marker a runtime folder carries (build.json), or null without one */
+    fun readMarker(dir: File): com.nx.android.domain.RuntimeBuildMarker? = try {
+        val o = org.json.JSONObject(File(dir, "build.json").readText())
+        com.nx.android.domain.RuntimeBuildMarker(
+            playerApiRevision = o.optInt("player_api_revision", 0),
+            profileH = o.optString("profile_h"),
+            noLsfg = if (o.has("no_lsfg")) o.optBoolean("no_lsfg") else null,
+        )
+    } catch (e: Exception) {
+        null
     }
 
     /**

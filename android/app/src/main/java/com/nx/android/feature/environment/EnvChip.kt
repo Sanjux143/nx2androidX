@@ -27,18 +27,18 @@ import com.nx.android.core.ui.theme.NxPalette
  * The top bar's environment state: a dot and a word.
  *
  * The chip is always there, so the player sees whether the app can be used without going anywhere. It is red
- * when the environment or the keys are not in place, amber when everything is in place but something optional is
- * missing (the machine's firmware: only a game that reads the console's system data needs it - or Android's
- * limit on the app's child processes: the app works, but a port can be stopped halfway). The word stays the same
- * in both amber cases: the app is ready to work, the colour says there is something to look at, and the checklist
- * says what.
+ * when the environment or the keys are not in place, amber when everything is in place but something is missing
+ * (the machine's firmware: only a game that reads the console's system data needs it - the game profiles the
+ * app does not carry: the player imports them - or Android's limit on the app's child processes: the app works,
+ * but a port can be stopped halfway). The word is the same in the amber and the red case - the app is not ready
+ * as it stands - and the colour says how much of it is missing; the checklist says what.
  */
 @Composable
 fun EnvChip(chip: EnvCheck.Chip, onClick: () -> Unit) {
     val (text, tint) = when (chip) {
         EnvCheck.Chip.CHECKING -> stringResource(R.string.env_chip_checking) to NxPalette.Unbuilt
         EnvCheck.Chip.READY -> stringResource(R.string.env_chip_ready) to NxPalette.Ready
-        EnvCheck.Chip.HINT -> stringResource(R.string.env_chip_ready) to NxPalette.Building
+        EnvCheck.Chip.HINT -> stringResource(R.string.env_chip_not_ready) to NxPalette.Building
         EnvCheck.Chip.NOT_READY -> stringResource(R.string.env_chip_not_ready) to NxPalette.Danger
     }
     Row(

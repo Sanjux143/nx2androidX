@@ -50,13 +50,20 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 - 逐步操作见 [nx2android-release skill](.claude/skills/nx2android-release/SKILL.md)：发版的命令顺序、构建只看 tag、
   产物怎么核、alpha 怎么变成当前版本、这些坑
 
+- **发版后 QQ 群里会收到公告**：`.github/workflows/android-apk.yml` 在 APK 挂上 release 之后跑
+  `devtools/qq_release_announce.py`，把版本号、release 说明里的中文更新日志、release 链接和夸克网盘链接发到群里。
+  机器人的票据是仓库 secrets（`QQBOT_APP_ID` / `QQBOT_APP_SECRET` / `QQBOT_GROUP_OPENID`），**不配就只是没有公告，
+  发版照常**；**公告失败不算流水线失败**（那一步是 `continue-on-error`），群里的公告漏了不影响发版本身。
+  `QQBOT_GROUP_OPENID` 可以写多个群（逗号分隔），**逐群发送、逐群容错**：一个群拒收不影响其它群。
+  公告里带链接；平台若拒收链接（`40054010`），脚本自动去掉链接再发一次，公告不会因此丢掉
+
 - 预发布用 GitHub **pre-release**（`--prerelease`）；app 的更新检查读 "Latest"，所以正式版玩家不会被推上 alpha。
   **GitHub 不允许预发布成为 "Latest"**（API：drafts and prereleases cannot be set as latest）：要让某个 alpha
   成为当前版本，就去掉它的预发布标记（`gh release edit <tag> --prerelease=false`）——tag 名字里的 `alpha` 不变，
   之后的预发布不会自动抢走这个位置。**只改标记可能不会让 "Latest" 指过去**：GitHub 的 "Latest" 在创建时
   就定了（`make_latest`），事后去标记要另外显式点名：
   `gh api -X PATCH repos/zFitness/nx2androidX/releases/<id> -F make_latest=true`。
-  现状：`v0.3.0-alpha12` 是 Latest
+  现状：`v0.3.0-alpha14` 是 Latest
 - **构建只由 tag 触发**：推分支什么都不构建。tag 一推，构建就开始（产物从那个 tag 的提交来），
   它会等 release 建好后把 APK 附上去（`gh release create` 紧跟着 tag 就行）。**要重新构建就把 tag 重推一次**
   （`git tag -f` + `git push --force`），构建跟着新 tag 走
@@ -71,7 +78,9 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
   名单用 `python3 devtools/release_contributors.py` 取（上个 tag 之后合并的 PR 与作者），粘进 notes；
   游戏级别的署名同时落在 `docs/PORT_CHECKLIST.md` 的那一行（`ported by @handle`）
 - app 的 `versionName` 在 `android/app/build.gradle.kts`（当前 `0.3.0-alpha12`），与 tag 去掉 `v` 一致
-- **一次发布只带手机的 APK，别无其它**。桌面 workflow（`release-windows.yml` / `release-macos.yml`）不发版，
+- **一次发布带手机的 APK 和游戏档案包，别无其它**。App 不带游戏档案（几百 MB 的着色器表），玩家自己导入：
+  release 的第二个附件 `nx2a-profiles-r<版本>-<commit>.zip`（CI 切，`devtools/profiles_zip.py`），夸克网盘里
+  同样放一份。桌面 workflow（`release-windows.yml` / `release-macos.yml`）不发版，
   只在需要时手动触发（Actions → 该 workflow → Run workflow），产物留在该次运行的 artifact 里
 - 每个 `gh` 命令都要带 `--repo zFitness/nx2androidX`（本机 gh 默认指向另一个仓库）
 - hook `.claude/hooks/release_guard.py`（`.claude/settings.json`）会拦截不合规的 `gh release create|upload|edit`
@@ -124,8 +133,9 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 | 加游戏档案 / 改共享核心（宿主、Vulkan、着色器、输入、覆盖层） | `.claude/skills/nx2android-dev` |
 | 真机排障（闪烁、崩溃、掉帧、压测、实况验证） | `.claude/skills/switch-android-port` |
 | 推给上游（开 PR、rebase、回 review） | `.claude/skills/nx2android-upstream-pr` |
-| 同步上游（直接合并 `upstream/main` 进 `android` 的步骤、三张清单、合并的坑；2026-11-14 起不再有 `next` 中转线） | `../openspec-hub/nx2android/my-docs/上游同步.md`、`../openspec-hub/nx2android/my-docs/踩坑/` |
 | 分层与契约、目录职责 | `docs/ARCHITECTURE.md` |
 | 从仓库运行、构建、测试、提交信息 | `docs/DEVELOPMENT_GUIDE.md` |
 | 游戏进度清单 | `docs/PORT_CHECKLIST.md`、`docs/PORT_STATUS.md` |
+| 同步进来的上游档案（未移植的档案、来源、已知缺口） | `docs/UPSTREAM_PROFILES.md` |
+| 档案包（App 不带档案，玩家导入；发版时它也是 release 的附件） | `docs/UPSTREAM_PROFILES.md`、`porter/profiles_layer.py`、`devtools/profiles_zip.py` |
 | 上游引擎（Apple 路线）的档案格式与调查手册 | `nxnative/AGENTS.md`、`nxnative/docs/agents/` |

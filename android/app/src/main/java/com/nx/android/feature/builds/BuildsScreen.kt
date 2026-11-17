@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -85,13 +86,19 @@ private fun sourceMatchesTarget(target: File, candidate: File): Boolean {
 /**
  * 构建页：发起与跟踪移植的工作台，按移植的顺序排卡——目标（游戏与它的参数）、进度与取消、产物、日志、历史。
  * 游戏库里点「▶ 构建」把游戏带进来（buildsTarget）；开始按钮在这里，前提的检查与说明也在这里。
+ *
+ * 档案的处理弹窗（在线更新还是本地导入）不在这里画：它要盖住整屏，画在页面里只盖得到顶栏与内容之间
+ * 那一条缝（页面是滚动列，遮罩跟着列走）。这里只报一个意图，外层那一层拿它把弹框画在整屏上。
  */
 @Composable
 fun BuildsRoute(viewModel: BuildsViewModel, keys: String, envReady: Boolean,
-                actions: AppActions, onRequest: (PickerRequest) -> Unit, onLog: (String) -> Unit) {
+                actions: AppActions, onRequest: (PickerRequest) -> Unit, onLog: (String) -> Unit,
+                onOpenProfiles: () -> Unit) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val locale = LocalAppLocale.current
     LaunchedEffect(uiState.running) { if (uiState.running) viewModel.buildStarted() }
+    // 档案：玩家可能刚导入过，进页面时读一次回执
+    LaunchedEffect(Unit) { viewModel.refreshProfiles() }
     // 页面自己要说的话（没有档案的游戏被勾上了实验性移植）：屏幕把它念出来
     LaunchedEffect(viewModel.noticeSeq) {
         when (viewModel.notice) {
@@ -102,13 +109,15 @@ fun BuildsRoute(viewModel: BuildsViewModel, keys: String, envReady: Boolean,
             null -> Unit
         }
     }
-    BuildsScreen(viewModel.library, viewModel, uiState, keys, envReady, actions, onRequest, onLog)
+    BuildsScreen(viewModel.library, viewModel, uiState, keys, envReady, actions, onRequest, onLog,
+        onImportProfiles = onOpenProfiles)
 }
 
 @Composable
 private fun BuildsScreen(lib: LibraryState, viewModel: BuildsViewModel, uiState: BuildsUiState,
                          keys: String, envReady: Boolean, actions: AppActions,
-                         onRequest: (PickerRequest) -> Unit, onLog: (String) -> Unit) {
+                         onRequest: (PickerRequest) -> Unit, onLog: (String) -> Unit,
+                         onImportProfiles: () -> Unit) {
     val locale = LocalAppLocale.current
     val running = uiState.running
     val target = uiState.target?.let(::File) ?: uiState.gameFile.takeIf { running }?.let { File(it) }
@@ -131,6 +140,30 @@ private fun BuildsScreen(lib: LibraryState, viewModel: BuildsViewModel, uiState:
             else -> {
                 Section(stringResource(R.string.builds_start_title)) {
                     Text(stringResource(R.string.builds_start_hint), style = MaterialTheme.typography.bodyMedium)
+                    // 档案：App 不带档案，玩家自己导入一份。没有档案的时候，移植只能盲猜
+                    val profiles = viewModel.profilesCount
+                    val ported = viewModel.profilesPorted
+                    if (profiles > 0) {
+                        Hint(
+                            if (ported > 0) stringResource(R.string.builds_profiles_ready_ported, profiles, ported)
+                            else stringResource(R.string.builds_profiles_ready, profiles),
+                            size = 11.sp,
+                        )
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(stringResource(R.string.builds_profiles_missing), style = MaterialTheme.typography.bodySmall,
+                                color = NxPalette.Building)
+                            TextButton(
+                                onClick = onImportProfiles,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.heightIn(min = 30.dp),
+                            ) {
+                                Text(stringResource(R.string.builds_profiles_import),
+                                    style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                     CapsuleButton(stringResource(R.string.builds_choose_game_file), onClick = {
                         onRequest(PickerRequest(PickerMode.FILE, GAME_FILE_EXTENSIONS, File("/storage"),
                             locale.str(R.string.builds_choose_game_file), onPicked = { viewModel.setTarget(it) }))

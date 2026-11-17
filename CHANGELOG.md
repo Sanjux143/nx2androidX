@@ -8,6 +8,62 @@ players on the released version are not pushed onto an alpha.
 
 The release page has the APK and the full notes: <https://github.com/zFitness/nx2androidX/releases>.
 
+## v0.3.0-alpha15 - 2026-11-17
+
+### Before you update
+
+- The app does not carry the game profiles any more. They are half a gigabyte of shader tables, and every release copied them again; this build carries none of them. Import the profiles package once after the update - it is the release's second file. The environment check has the button, and the profiles row's "manage" box can fetch this build's own package for you: the download is checked against the build's digest, so what arrives is what this build was made for. The imported layer lives outside the app's own storage, so an app update never touches it again.
+- A data pack made with this version needs this app to run: the pack no longer carries the runtime inside. The app keeps one runtime per game in its own folder and builds it when the game page opens. The games already on the phone keep working, and a rebuild moves them to the new layout.
+
+### New
+
+- The game page takes care of itself: it opens on a loading page that checks the game, rebuilds the runtime when the profile drifted (no confirmation asked), and starts the game. A failure shows the porter's reason with a retry. The "update runtime" chore is gone from the library.
+- Tapping a game asks the game's own process first: a running game is resumed, a dead one is refused - the library no longer greys cards out on its own guess.
+- A game can be pinned to the home screen from its detail panel: the shortcut goes through the same launch gate as a tap in the library, its id stays with the game, and the icon greys out when the game is deleted.
+- A port can leave the phone as one folder of plain files, and another phone's + button takes the folder in. The folder stays the player's own, wherever they put it, and the same game can sit in the library twice.
+- The help icon opens a FAQ page with the questions players keep asking, in the phone's language; the answers point at the place where the thing is done.
+- The build page says how many of the profiles are really ported: the package holds upstream's iOS profiles too, and those are experiments.
+- The layout editor hides a control on a long press.
+
+### Fixed
+
+- A pack carries its own profile now: the port writes the profile it used into the pack, and a rebuild reads it first, so a rebuild no longer needs the phone the pack was made on. One successful rebuild writes the profile back, so an older pack becomes self-sufficient after one update.
+- The runtime update puts the runtime back where the pack keeps it: an update used to leave a new folder behind while the pack's own host went stale. A pack holds one runtime now, not a pile of them.
+- The profiles package is reproducible: two cuts of the same content are the same file, so the app's digest check no longer calls an identical package "not this build's".
+- DARK SOULS: REMASTERED's re-port no longer dies in the shader split: every BND3 archive hit a broken name read (UnboundLocalError on the first entry). The reader has a test now.
+- The porter's answers come back on the app's main thread: a toast raised from the porter's own thread killed the app right after a successful profiles import.
+- The profiles chip says "not ready" in amber: it said "ready" in amber for everything else, and a missing package was not tellable from a working one.
+
+### Community ports
+
+- No pull request was merged into this repository itself, and no upstream sync came with this release.
+
+## v0.3.0-alpha14 - 2026-11-16
+
+### New games
+
+- 13 Sentinels: Aegis Rim (Asia) - the Chinese release (the Japanese and Korean ones too); it installs beside the western one, so both play on the same phone. Tested on the Xiaomi 23117RK66C: the port runs, the Chinese text and the cutscenes play, the save menu works, 58-59 fps at 1440p.
+
+### New
+
+- The port shows what it is doing: the rewriter's own progress lines reach the screen while the port runs, so a working port is not mistaken for a stuck one (a player sat 75 minutes in a run that needed about three, and gave up). The log bundle's device snapshot gives every relevant process's CPU time and age - the two numbers that tell a working process from a stuck one.
+- The pack follows the phone's language when the game has it: a Chinese phone packs a Chinese game in Chinese. OCTOPATH TRAVELER 0 no longer comes out with Korean strings and a Korean app name. The port never fails for it - it is a wish, not a demand.
+- The port says what became of the phone's language: when the game does not have it, the log says so instead of leaving the game's own first language there without a word.
+- The app names the netdisk folder in the port's log: a file in a synced netdisk folder that is not downloaded yet is read in pieces and dies at the extract as a broken file. The app points at the folder and asks for the file to be downloaded to the phone's own storage first.
+
+### Fixed
+
+- An archive too big for the phone's memory is mapped instead of refused: 13 Sentinels: Aegis Rim's 4.2 GB asset archive is now scanned without being read whole, and the game still splits into the same 751 shaders on the device.
+- A failed tool says why: its red line is printed before the log's tail and carried in the error message, instead of a tail of broken pipes hiding the reason fifty lines up.
+- A forked child that fails sends its reason through the pipe, and the parent prints it once.
+- The doctor's prod.keys row says what the file holds (the key names only, never their values) or why it cannot work: a title.keys file renamed as prod.keys used to pass the check and die far away, at the extract, with nothing pointing back at the keys.
+- A language tag with a region resolves: a phone's locale carries one (ja-JP, ko-KR, zh-Hans-CN), and every one of them missed the table, so the pack silently fell back to English for everybody but the Chinese phones.
+
+### Community ports
+
+- **@zfitness** - 13 Sentinels: Aegis Rim (Asia), the Chinese release, brought up on Android.
+- No pull request was merged into this repository itself, and no upstream sync came with this release.
+
 ## v0.3.0-alpha13 - 2026-11-15
 
 ### Before you update

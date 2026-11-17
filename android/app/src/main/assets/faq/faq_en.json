@@ -1,0 +1,84 @@
+[
+  {
+    "group": "prepare",
+    "title": "Getting ready",
+    "items": [
+      {
+        "q": "What does porting a game need?",
+        "a": "Four things: prod.keys exported from your own console, your own game file, the app's porting environment (it unpacks itself on the first port, about 700 MB), and the game profile pack (optional - the games the app ships with do not need it). The setup asks where your keys are, the build page picks the game file, and the environment capsule in the top bar installs the profile pack."
+      },
+      {
+        "q": "Where do prod.keys and the game file come from?",
+        "a": "Export them from your own console. The app provides no download source for games or keys, and points to none - both can only come from your own console."
+      },
+      {
+        "q": "Where do the game files go on the phone?",
+        "a": "Put them in the phone's storage; a card plugged in works too. The app recognizes nsp, xci, nsz and xcz. The build page's \"Choose a game file\" is where you pick it, and a file you picked shows up in the library."
+      },
+      {
+        "q": "Where is the game profile pack, and how do I install it?",
+        "a": "It ships with the release: the environment capsule in the top bar → \"Game profiles\" → \"Update online\" downloads the pack (about 90 MB) from the release page. You can also download the zip yourself and import it from the same row."
+      },
+      {
+        "q": "Will re-porting take long?",
+        "a": "It does not start from scratch: a re-port reuses what the last one left behind (the game's workspace, for one), so it takes less time than the first port. How long depends on the game and on the phone."
+      }
+    ]
+  },
+  {
+    "group": "trouble",
+    "title": "When something goes wrong",
+    "items": [
+      {
+        "q": "A port stops with no error (exit 137)",
+        "a": "Android's child-process limit stopped the porter; the port itself did not fail. Fix it: the environment capsule in the top bar → \"Child-process limit\" → \"Fix\"."
+      },
+      {
+        "q": "The game stutters, flickers or shows a black screen",
+        "a": "Look in this order: Settings → Vulkan driver (try another one), Settings → Display (frame generation), and the in-game drawer → Performance and HUD (frame rate, frame time, the driver in use). If none of that helps, read the log of that build (build details → \"Share the log\")."
+      },
+      {
+        "q": "How do I report a problem to the developers?",
+        "a": "Share the log of that build from the build details, then open an issue in the repository and paste the log into it. The GitHub card at the top of this page is the repository."
+      },
+      {
+        "q": "The port failed - how do I get the log out?",
+        "a": "Open that build from \"History\" on the build page; the details have \"Share the log\" - what comes out is that build's own output, ready to paste into an issue."
+      },
+      {
+        "q": "How do I get the game's runtime log out?",
+        "a": "Game details → \"Manage\" → \"Share the log\". A game that has not run yet says it has no runtime log yet."
+      }
+    ]
+  },
+  {
+    "group": "other",
+    "title": "Other",
+    "items": [
+      {
+        "q": "How do I update the app?",
+        "a": "Settings → About → \"Check for updates\". It reads the release page of the repository; you can also download the APK from that page yourself."
+      },
+      {
+        "q": "Where are the saves, and how do I back them up?",
+        "a": "Every game in the library has a \"Saves\" section where you can export or import a save pack. The raw files sit in the app's own directory; \"How do I reach the app's own directory?\" says how to get in there."
+      },
+      {
+        "q": "How do I reach the app's own directory?",
+        "a": "Turn on Settings → About → \"File manager access\". The system then mounts the app's directory (the runtime, the saves, the logs) as one root: the file manager can go into it, and you can copy things out of it. Switch it off and that root is gone."
+      },
+      {
+        "q": "How do I connect and set up a gamepad?",
+        "a": "The gamepad icon in the top bar → Gamepad center: there you see how many are connected, rebind, calibrate, and open the Bluetooth settings. How the gamepad behaves inside a game is set in the drawer → Controls."
+      },
+      {
+        "q": "How do I export a game as a folder?",
+        "a": "Game details → \"Manage\" → \"Export this game as a folder\", then pick a folder to export into. The app writes that port into the folder (named after the game): the data pack and the game's plain files both go in. The export changes nothing in the app - the game keeps working. Writing to a card is slow, so do not pull the card out while it runs. The exported folder can be copied to someone else; another phone takes it in with the plus sign in the top bar → \"Import a data pack someone else exported\"."
+      },
+      {
+        "q": "What is coming next?",
+        "a": "On the list: screen resolution, cheats, mods, online play and upscaling. They are all still being worked on - please wait for a later release. Everything that works today is written down in the other entries on this page."
+      }
+    ]
+  }
+]

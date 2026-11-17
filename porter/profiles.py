@@ -9,7 +9,7 @@ class Entry:
     id: str
     name: str
     android: bool        # has an android.tsv
-    status: str          # playable / wip / boots / experimental; 'ios only' without android.tsv
+    status: str          # playable / wip / boots / experimental; 'not ported' without android.tsv
     tested: str
     package: str
 
@@ -18,7 +18,7 @@ class Entry:
 
 def entry(g, p):
     if p: return Entry(g.id, g.get('name', g.id), True, p.status, p.tested, p.package)
-    return Entry(g.id, g.get('name', g.id), False, 'ios only', '', f'org.nx2a.t{g.id.lower()}')
+    return Entry(g.id, g.get('name', g.id), False, 'not ported', '', f'org.nx2a.t{g.id.lower()}')
 
 
 def all_entries(android_only=True):

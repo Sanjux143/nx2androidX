@@ -78,7 +78,7 @@ class FolderScannerTest {
         val pack = File(out, "Game-data")
         File(pack, "host").mkdirs()
         File(pack, "nx2a-data.json").writeText(
-            """{"title_id":"0100000000010000","player_api_revision":${PlayerApiRevision.CURRENT},"romfs_at":"${romfs.absolutePath}"}""")
+            """{"title_id":"0100000000010000","host":"host/libdmplay.so","player_api_revision":${PlayerApiRevision.CURRENT},"romfs_at":"${romfs.absolutePath}"}""")
         File(pack, "host/libdmplay.so").writeText("ELF")
 
         val p = LibraryFileScanner.outIndex(out)["0100000000010000"]!!
@@ -107,6 +107,49 @@ class FolderScannerTest {
         assertEquals("", p.romfsAt)
         assertFalse(p.romfsMissing)
         out.deleteRecursively()
+    }
+
+    /**
+     * 新格式的包（清单没有 host 字段）：运行库在统一目录里，可跑与否由目录侧的构建标记说了算——
+     * 标记在且接口版本对得上就能跑（启动零拷贝）；标记没了或对不上就是「需要重建」。
+     */
+    @Test
+    fun `a new-format pack runs on the runtime folder's build marker`() {
+        val out = tmpDir()
+        val runtimes = tmpDir()
+        val pack = File(out, "Game-data")
+        pack.mkdirs()
+        File(pack, "nx2a-data.json").writeText(
+            """{"title_id":"0100000000010000","player_api_revision":${PlayerApiRevision.CURRENT}}""")
+
+        // 目录里还没有运行库：不能跑，需要重建（也不是只有清单的空壳——新格式以目录为准）
+        var p = LibraryFileScanner.outIndex(out, runtimes)["0100000000010000"]!!
+        assertFalse(p.runnable)
+        assertTrue(p.needsRuntimeUpdate)
+        assertFalse(p.hasHost)
+
+        // 目录里一份标记对得上的完整运行库：能跑
+        val dir = File(runtimes, "0100000000010000")
+        dir.mkdirs()
+        File(dir, "libdmplay.so").writeText("ELF")
+        for (h in listOf("libhook_impl.so", "libmain_hook.so", "libfile_redirect_hook.so", "libgsl_alloc_hook.so")) {
+            File(dir, h).writeText("ELF")
+        }
+        File(dir, "build.json").writeText(
+            """{"player_api_revision":${PlayerApiRevision.CURRENT},"profile_h":"","no_lsfg":false}""")
+        p = LibraryFileScanner.outIndex(out, runtimes)["0100000000010000"]!!
+        assertTrue(p.runnable)
+        assertFalse(p.needsRuntimeUpdate)
+        assertTrue(p.hasHost)
+
+        // 接口版本对不上（app 升级了）：要重建
+        File(dir, "build.json").writeText(
+            """{"player_api_revision":${PlayerApiRevision.CURRENT - 1},"profile_h":"","no_lsfg":false}""")
+        p = LibraryFileScanner.outIndex(out, runtimes)["0100000000010000"]!!
+        assertFalse(p.runnable)
+        assertTrue(p.needsRuntimeUpdate)
+
+        out.deleteRecursively(); runtimes.deleteRecursively()
     }
 
     @Test

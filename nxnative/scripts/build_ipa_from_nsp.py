@@ -283,11 +283,15 @@ LANG_NEAR = {'en-US': 'en-GB', 'en-GB': 'en-US', 'fr': 'fr-CA', 'fr-CA': 'fr', '
 
 
 def language_code(s):
-    """A game language as typed (a code such as ja / zh-Hans, any case, _ for -, or its name such as Japanese) → its language code (nacp.LANGUAGES); None when it is none of them"""
+    """A game language as typed (a code such as ja / zh-Hans, any case, _ for -, or its name such as Japanese) → its language code (nacp.LANGUAGES); None when it is none of them.
+    A phone's locale tag (ja-JP, zh-Hans-CN) is resolved by dropping what the game does not carry: the region first, then the rest"""
     k = s.strip().lower().replace('_', '-')
-    for c, n in nacp.LANGUAGES:
-        if k in (c.lower(), n.lower()): return c
-    return {'en': 'en-US', 'english': 'en-US', 'zh-cn': 'zh-Hans', 'zh-tw': 'zh-Hant'}.get(k)   # the settings' older codes for Chinese
+    for cand in (k, k.rsplit('-', 1)[0], k.split('-')[0]):
+        for c, n in nacp.LANGUAGES:
+            if cand in (c.lower(), n.lower()): return c
+        c = {'en': 'en-US', 'english': 'en-US', 'zh-cn': 'zh-Hans', 'zh-tw': 'zh-Hant'}.get(cand)   # the settings' older codes for Chinese
+        if c: return c
+    return None
 
 
 def game_language(want, asked, have):
@@ -314,15 +318,17 @@ def ask(prompt, what):   # what: what is missing, for the error message
 
 def run(cmd, log, env=None, cwd=None, on_line=None):
     """Run a subprocess with all its output written to log (the console shows the stage line instead: the shader build alone emits tens of thousands of compiler warnings);
-    stop on a non-zero exit, printing the log's last lines. on_line: called with every output line (build_ipa.sh's own step lines move its stages on)"""
+    stop on a non-zero exit, printing the log's red lines and its last lines. on_line: called with every output line (build_ipa.sh's own step lines move its stages on)"""
     cmd = [str(c) for c in cmd]
     log.parent.mkdir(parents=True, exist_ok=True)
     tail = collections.deque(maxlen=40)
+    reds = []   # the red lines of the log: the reason is in one of them, and the last lines may hold only the noise behind it (a pool's children dying)
     p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1)
     try:
         with open(log, 'w') as f:
             for line in p.stdout:
                 f.write(line); tail.append(line)
+                if '[RED]' in line: reds.append(line.rstrip('\n'))
                 if on_line:
                     try: on_line(line.rstrip('\n'))
                     except Exception: pass   # progress never stops the build
@@ -333,14 +339,29 @@ def run(cmd, log, env=None, cwd=None, on_line=None):
         p.stdout.close()
     if p.returncode:
         PROG.end(ok=False)
+        if reds: PROG.say(f'---- red lines of {log} ----\n' + '\n'.join(reds[-20:]))
         PROG.say(f'---- last lines of {log} ----\n' + ''.join(tail).rstrip('\n'))
         tool = Path(cmd[1] if cmd[0] in (sys.executable, 'bash') else cmd[0]).name
-        raise BuildError(f'{tool} exit code {p.returncode} (full output: {log})')
+        raise BuildError(f'{tool} exit code {p.returncode}' + (f': {reds[-1]}' if reds else '') + f' (full output: {log})')
 
 
 def build_id(nso):
     with open(nso, 'rb') as f:
         f.seek(0x40); return f.read(16).hex()
+
+
+def tail_line(path):
+    """The last complete line of a file: its end is read, not the whole file. '' when it has none"""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END); n = f.tell()
+            if not n: return ''
+            f.seek(max(0, n - 512)); raw = f.read()
+    except OSError:
+        return ''
+    if not raw.endswith(b'\n'):   # a line still being written is not a line yet
+        raw = raw[:raw.rfind(b'\n') + 1] if b'\n' in raw else b''
+    return raw.decode(errors='replace').rstrip('\n').rsplit('\n', 1)[-1]
 
 
 def rmtree(p):
@@ -979,6 +1000,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     if manifest.is_file(): shutil.copyfile(manifest, tmp / 'nro.tsv')   # refused-only manifests preserve the game's offline registration path too
     PROG.set(step=', '.join(mods) + (f' and {len(nros)} NROs' if nros else ''), done=0, total=len(names), unit='modules')
     procs, logf, todo, cores = {}, {}, list(names), max(2, os.cpu_count() or 4)
+    notes = {}   # the last progress line of each module: the tools print them (patch_nso.py), and the stage's note follows them
     try:
         while todo or procs:
             while todo and len(procs) < cores:
@@ -991,6 +1013,11 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
                     PROG.end(ok=False)
                     PROG.say(f'---- last lines of {log} ----\n' + ''.join(collections.deque(open(log, errors='replace'), maxlen=40)).rstrip('\n'))
                     raise BuildError(f'patch_nso.py exit code {p.returncode} on {m} (full output: {log})')
+            for m in procs:   # a rewrite of hours is not a silence: the tool's own progress lines are passed on
+                text = tail_line(logs / f'rewrite_{m}.log')
+                if text.startswith('progress:') and notes.get(m) != text:
+                    notes[m] = text
+                    PROG.set(note=f'{m}: {text[len("progress:"):].strip()}')
             time.sleep(0.2)
     finally:   # an error or an interrupt stops the other rewrites
         for p in procs.values():

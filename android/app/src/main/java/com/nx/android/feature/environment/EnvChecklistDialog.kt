@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +42,7 @@ import com.nx.android.R
 import com.nx.android.data.PhantomFix
 import com.nx.android.domain.EnvCheck
 import com.nx.android.domain.PhantomCheck
+import com.nx.android.domain.ProfilesPackage
 import com.nx.android.feature.environment.EnvironmentCheckUiState
 import com.nx.android.feature.environment.EnvironmentCheckViewModel
 import com.nx.android.feature.onboarding.OnboardingViewModel
@@ -66,6 +68,8 @@ fun EnvChecklistDialog(
     onPickKeys: () -> Unit,
     firmware: String,
     onImportFirmware: () -> Unit,
+    onImportProfiles: () -> Unit,
+    onProfilesUpdated: (Boolean) -> Unit = {},
     onRunOnboarding: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -73,6 +77,8 @@ fun EnvChecklistDialog(
     val onboardingState by onboarding.uiState.collectAsStateWithLifecycle()
     // 子进程限制的修复弹窗：盖在清单上面
     var phantomOpen by remember { mutableStateOf(false) }
+    // 档案的处理弹窗：在线更新还是本地导入
+    var profilesOptions by remember { mutableStateOf(false) }
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)).clickable { onDismiss() },
         contentAlignment = Alignment.Center,
@@ -127,6 +133,22 @@ fun EnvChecklistDialog(
                     )
                     // 这一行下面说明它是干什么的：光写「没导入」，玩家不知道要不要管它
                     if (firmware.isBlank()) FirmwareHint()
+                    // 游戏档案：App 不带档案（几百 MB 的着色器表），玩家自己导入一份
+                    CheckLine(
+                        stringResource(R.string.profiles_title),
+                        when {
+                            state.profilesCount > 0 && !state.profilesDiffer -> EnvCheck.Level.OK
+                            state.profilesCount > 0 -> EnvCheck.Level.HINT
+                            else -> EnvCheck.Level.HINT
+                        },
+                        when {
+                            state.profilesCount == 0 -> stringResource(R.string.profiles_not_imported)
+                            state.profilesDiffer -> stringResource(R.string.profiles_other_package, state.profilesCount, state.profilesLabel)
+                            else -> stringResource(R.string.profiles_imported, state.profilesCount, state.profilesLabel)
+                        },
+                        action = if (state.importingProfiles) null else stringResource(R.string.profiles_manage),
+                        onAction = { profilesOptions = true },
+                    )
                     // 子进程限制：Android 会停掉本应用的子进程，移植器就是其中之一（它是活最久的那个）
                     PhantomLine(state, viewModel::refreshPhantom) { phantomOpen = true }
 
@@ -175,6 +197,107 @@ fun EnvChecklistDialog(
         }
         // 子进程限制的修复弹窗：盖在清单上面
         if (phantomOpen) PhantomFixDialog(onDismiss = { phantomOpen = false })
+        // 档案的处理弹窗：盖在清单上面
+        if (profilesOptions) GameProfilesDialog(
+            viewModel = viewModel,
+            onLocalImport = { profilesOptions = false; onImportProfiles() },
+            onUpdated = onProfilesUpdated,
+            onDismiss = { profilesOptions = false; viewModel.cancelPackageUpdate() },
+        )
+    }
+}
+
+/**
+ * How to get the game profiles: fetched from the release this build belongs to, or picked from the phone.
+ *
+ * The download says how far it is; a failure says what went wrong and leaves the other way open. The package
+ * of another release is a valid one too - the row says it is not this build's, and the player may keep it.
+ *
+ * The same box serves the environment check and the build page: the online update is the view model's own,
+ * the local import is the caller's (only the caller knows how the file picker is opened).
+ */
+@Composable
+fun GameProfilesDialog(
+    viewModel: EnvironmentCheckViewModel,
+    onLocalImport: () -> Unit,
+    onUpdated: (Boolean) -> Unit = {},
+    onDismiss: () -> Unit,
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    ProfilesOptionsDialog(
+        update = state.packageUpdate,
+        onOnline = { viewModel.updateProfiles { ok -> onUpdated(ok) } },
+        onLocal = onLocalImport,
+        onDismiss = onDismiss,
+    )
+}
+
+@Composable
+private fun ProfilesOptionsDialog(
+    update: ProfilesPackage.Update,
+    onOnline: () -> Unit,
+    onLocal: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val downloading = update is ProfilesPackage.Update.Downloading
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)).clickable { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.widthIn(max = 480.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+                .background(NxPalette.Surface.copy(alpha = 0.95f))
+                .clickable(enabled = false) {},
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.profiles_title), style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold)
+                when (update) {
+                    is ProfilesPackage.Update.Downloading -> {
+                        Text(stringResource(R.string.profiles_downloading, (update.progress * 100).toInt()),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        LinearProgressIndicator(progress = { update.progress }, modifier = Modifier.fillMaxWidth(),
+                            color = NxPalette.Cream)
+                    }
+                    is ProfilesPackage.Update.Failed -> Text(stringResource(R.string.profiles_update_failed, update.reason),
+                        style = MaterialTheme.typography.bodySmall, color = NxPalette.Danger)
+                    ProfilesPackage.Update.Idle -> Unit
+                }
+                ProfilesOption(
+                    stringResource(R.string.profiles_update_title),
+                    stringResource(R.string.profiles_update_hint),
+                    enabled = !downloading,
+                    onClick = onOnline,
+                )
+                ProfilesOption(
+                    stringResource(R.string.profiles_local_title),
+                    stringResource(R.string.profiles_local_hint),
+                    enabled = !downloading,
+                    onClick = onLocal,
+                )
+                QuietButton(stringResource(R.string.common_close), onDismiss)
+            }
+        }
+    }
+}
+
+/** One way to get the package: what it is called, what it does, and whether it can be taken now */
+@Composable
+private fun ProfilesOption(title: String, hint: String, enabled: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.06f))
+            .clickable(enabled = enabled, onClick = onClick).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp)
+        }
     }
 }
 

@@ -9,6 +9,8 @@ need them: the children inherit what they need and hand their results back throu
 
 init is called in each child before its share of the work (the pool's initializer). Each child writes its share as
 one pickle; a child that dies leaves the parent without it, and the child's own message (on stderr) says why.
+A child that fails sends its message instead of its share: the parent reads every child's pipe, prints the
+messages and stops. So the failure is read once, as the reason, and not as the other children's broken pipes.
 """
 import os
 import pickle
@@ -32,25 +34,34 @@ def fork_map(fn, items, jobs=8, init=None):
             try:
                 os.close(r)
                 if init: init()
-                out = pickle.dumps([(i, fn(item)) for i, item in ch], protocol=pickle.HIGHEST_PROTOCOL)
+                out = pickle.dumps(('ok', [(i, fn(item)) for i, item in ch]), protocol=pickle.HIGHEST_PROTOCOL)
+            except SystemExit as e:   # a deliberate stop (the split's red line): the message goes to the parent, not a traceback
+                out = pickle.dumps(('error', str(e) or 'the child stopped without a message'), protocol=pickle.HIGHEST_PROTOCOL)
+            except BaseException:
+                out = pickle.dumps(('error', traceback.format_exc()), protocol=pickle.HIGHEST_PROTOCOL)
+            try:
                 with os.fdopen(w, 'wb') as f:
                     f.write(out); f.flush()
-                sys.stdout.flush(); sys.stderr.flush()
-                os._exit(0)
-            except BaseException:
-                traceback.print_exc()
-                os._exit(1)
+            except BrokenPipeError:
+                pass   # the parent is gone: there is nothing to send it to
+            sys.stdout.flush(); sys.stderr.flush()
+            os._exit(0)
         os.close(w)
         kids.append((pid, r))
-    results = []
+    results, errors = [], []
     for pid, r in kids:
         try:
             with os.fdopen(r, 'rb') as f:
                 got = pickle.load(f)
         except (EOFError, pickle.UnpicklingError) as e:
             os.waitpid(pid, 0)
-            raise RuntimeError(f'a forked child died before it delivered its results ({e.__class__.__name__})')
+            errors.append(f'a forked child died before it delivered its results ({e.__class__.__name__})')
+            continue
         os.waitpid(pid, 0)
-        results += got
+        if got[0] == 'error': errors.append(got[1])
+        else: results += got[1]
+    if errors:   # every child's pipe is read before this: no child is left writing into a pipe nobody reads
+        for e in errors: print(e, file=sys.stderr, flush=True)
+        raise RuntimeError(f'{len(errors)} of the {len(kids)} forked children failed (their messages are above)')
     results.sort(key=lambda p: p[0])
     return [r for _, r in results]

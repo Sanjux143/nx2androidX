@@ -48,14 +48,17 @@ class Registry(unittest.TestCase):
                     self.assertTrue(isinstance(off, int) and isinstance(oid, int) and HEX.match(word) and len(word) == 8 and why, f'{p} {bid} {off:#x}')
             for bid, fn in getattr(m, 'FRAME_STEP', {}).items():
                 self.assertTrue(callable(fn), f'{p} {bid}')
-            self.assertFalse({k for k in vars(m) if k.isupper() and k not in ('CUTS', 'OBS', 'FRAME_STEP')} - set(dir(__import__('nso_asm'))),
+            # The tables upstream's rewriter reads that this fork's does not yet: BINDING (what each patch is bound to, documentation), CAPABILITIES (the features a build
+            # declares), STUBS and the MATCH_* rules (upstream's function-matched patch subsystem). They are known, they are not read here.
+            known = ('CUTS', 'OBS', 'FRAME_STEP', 'BINDING', 'CAPABILITIES', 'STUBS', 'MATCH_CUTS', 'MATCH_FRAME_STEP', 'MATCH_STUBS')
+            self.assertFalse({k for k in vars(m) if k.isupper() and k not in known} - set(dir(__import__('nso_asm'))),
                              f'{p}: a table patch_nso.py does not read')
 
     def test_game_files_name_their_own_builds(self):
         for p, m in MODS.items():
             if p.name != 'patches.py': continue
             own = builds_of(p.parent.name)
-            for kind in ('CUTS', 'OBS', 'FRAME_STEP'):
+            for kind in ('CUTS', 'OBS', 'FRAME_STEP', 'STUBS', 'CAPABILITIES'):
                 for bid in getattr(m, kind, {}):
                     self.assertIn(bid, own, f'{p}: {kind} of {bid}, which is no build of profile {p.parent.name}')
                     self.assertNotEqual(own[bid], 'sdk', f'{p}: {bid} is an sdk build; its patches go in dm/tools/sdk_patches.py')

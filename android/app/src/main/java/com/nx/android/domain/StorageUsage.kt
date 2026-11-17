@@ -41,6 +41,9 @@ object StorageUsage {
 
         /** 数据包 */
         PACK,
+
+        /** App 之外的文件（导入的包：它在玩家自己挑的目录里，App 不统计它） */
+        OUTSIDE,
     }
 
     /** 一段的状态 */
@@ -90,7 +93,11 @@ object StorageUsage {
 
         /** 这一项是不是有个下界之外的东西（够不着 / 量不了 / 只量了一半） */
         val partial: Boolean
-            get() = parts.any { it.state == State.PARTIAL || it.state == State.UNKNOWN || it.state == State.FAILED }
+            get() = parts.any { it.role != Role.OUTSIDE && (it.state == State.PARTIAL || it.state == State.UNKNOWN || it.state == State.FAILED) }
+
+        /** 这一项是不是导入的（文件在 App 之外，不计入合计） */
+        val outside: Boolean
+            get() = parts.any { it.role == Role.OUTSIDE }
     }
 
     /** 一次统计的结果 */

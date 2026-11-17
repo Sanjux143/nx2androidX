@@ -28,6 +28,7 @@ data class PadControl(
     val r: Float,               // 圆角半径
     val reach: Float,           // 边缘外还接住触摸的范围
     val s: Float,               // 玩家自己的大小系数（1 = 布局的）
+    val hidden: Boolean = false,   // 玩家在编辑器里把它藏起来了（还在控件表里，只是对局里不出现）
 ) {
     val isMenu: Boolean get() = kind == "menu"
     val isStick: Boolean get() = kind == "stick"
@@ -95,7 +96,12 @@ fun padDragPos(p: Float, half: Float, extent: Float): Float {
     return min(max(p, lo), hi)
 }
 
-/** 命中判定：圆角矩形的距离（负数在里面）与触摸可达范围 */
+/**
+ * 命中判定：圆角矩形的距离（负数在里面）与触摸可达范围
+ *
+ * 它只管几何：藏起来的控件照样命中（编辑器要能点到它们，才能把它找回来），
+ * 「藏起来的控件不回答」这件事在对局的路由里判（PadRouter.route）。
+ */
 object PadHit {
     /** (x, y) 落在哪个控件上（-1 = 没有）；H 是视图的高度（像素），布局的数都是窗口高度 */
     fun at(ctrls: List<PadControl>, x: Float, y: Float, H: Float): Int {
@@ -208,7 +214,9 @@ class PadRouter {
             val id = if (actionIndex < n) ids[actionIndex] else -1
             val x = if (actionIndex < n) xs[actionIndex] else 0f
             val y = if (actionIndex < n) ys[actionIndex] else 0f
-            val c = PadHit.at(ctrls, x, y, H)
+            val hit = PadHit.at(ctrls, x, y, H)
+            // 藏起来的控件不回答：它那片地方跟没有它一样，触摸归游戏
+            val c = if (hit >= 0 && ctrls[hit].hidden) -1 else hit
             held[id] = c
             if (c >= 0) {
                 pressed.add(c)

@@ -50,6 +50,7 @@ class PortState @Inject constructor(
     var stages by mutableStateOf(0); private set
     var stageName by mutableStateOf(""); private set
     var stageStep by mutableStateOf(""); private set
+    var stageNote by mutableStateOf(""); private set
     var progress by mutableStateOf(0f); private set
     var apkPath by mutableStateOf(""); private set   // the PC flow's APK ('' in the app's mode: the pack is the only artifact)
     var dataPath by mutableStateOf(""); private set  // the data pack, both modes' artifact
@@ -77,7 +78,7 @@ class PortState @Inject constructor(
         phase = PortPhase.RUNNING
         buildId = session.id
         gameFile = game
-        stageOf = 0; stages = 0; stageName = ""; stageStep = ""
+        stageOf = 0; stages = 0; stageName = ""; stageStep = ""; stageNote = ""
         progress = 0f
         apkPath = ""
         dataPath = ""
@@ -97,7 +98,7 @@ class PortState @Inject constructor(
             "say" -> say(ev.message)
             "stage" -> {
                 stageOf = ev.stage; stages = ev.stages
-                stageName = ev.name; stageStep = ""
+                stageName = ev.name; stageStep = ""; stageNote = ""
                 sessions.update(buildId) { it.copy(stage = stageName) }
                 say(locale.str(R.string.port_log_stage, ev.stage, ev.stages, ev.name))
             }
@@ -107,6 +108,11 @@ class PortState @Inject constructor(
                 if (ev.step.isNotEmpty() && ev.step != stageStep) {
                     stageStep = ev.step
                     say("  · $stageName $stageStep")
+                }
+                // the stage's own work (the rewriter's progress): a long stage is not a silence
+                if (ev.note.isNotEmpty() && ev.note != stageNote) {
+                    stageNote = ev.note
+                    say("  · $stageName $stageNote")
                 }
             }
             "result" -> {

@@ -46,8 +46,21 @@ gh release create v0.3.0-alpha07 --verify-tag --prerelease \
 
 - **Only a tag builds** (`.github/workflows/android-apk.yml`): a push of the branch builds nothing, and the build that the tag starts comes from the tag's own commit. It waits for the release to appear and attaches `nx2android-<tag>.apk` to it (a release that never appears leaves the APK in the run's artifact).
 - **A pre-release is published with `--prerelease`** so it does not become the repository's "Latest" release; the app's update check reads "Latest".
-- **No zip by hand**: the release carries the APK only. The desktop bundles are built by hand when they are wanted (Actions → the workflow → Run workflow).
+- **The release carries the APK and the game profiles package**: the app does not carry the profiles (half a gigabyte of shader tables), so the player imports the package into their own folder (the app's environment check has the button). The same build cuts it (`devtools/profiles_zip.py`) and attaches `nx2a-profiles-r<revision>-<commit>.zip` to the release; the Quark Drive folder holds it beside the APK.
+- **No desktop bundle by hand**: the desktop bundles are built by hand when they are wanted (Actions → the workflow → Run workflow).
 - Every `gh` command takes `--repo zFitness/nx2androidX`: `gh` in this checkout defaults to another repository.
+
+## The QQ group's announcement
+
+The tag's build tells the QQ group about the release, after the APK is attached to it: `devtools/qq_release_announce.py` posts the version, the Chinese changelog (the release's own notes), the release's page and the netdisk link to the group.
+
+- **It is an extra**: that step is `continue-on-error`, so a refused token, a group that took the bot out or a link the platform refuses never fails the release's build. The announcement's failure is a line in the run's log, nothing more.
+- **The bot's tickets are the repository's secrets**: `QQBOT_APP_ID`, `QQBOT_APP_SECRET`, `QQBOT_GROUP_OPENID`. Without them there is no announcement and the release goes out as it always did.
+- **The groups**: `QQBOT_GROUP_OPENID` holds one group or several, separated by commas. The announcement goes to each of them, one by one: a group that refuses it (the bot is not a member any more) does not hold the others back.
+- **The group's id is found once, by hand**: `python3 devtools/qq_release_announce.py listen` (it needs the QQ bot SDK locally: `pip install qq-botpy`), then add the bot to the group or @ it there and read the id it prints.
+- **The announcement is short by design**: at most four lines of the changelog, each cut to 42 characters.
+- To see what it would say: `python3 devtools/qq_release_announce.py announce --tag <tag> --dry-run`.
+- The release's notes carry a `<!-- qq-announced -->` marker afterwards, so a rebuilt tag does not announce the same version twice.
 
 ## Watch the build
 

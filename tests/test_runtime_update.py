@@ -6,12 +6,20 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from porter import runtime_update
 from porter.revision import PLAYER_API_REVISION
+
+
+def built_component() -> bytes:
+    """The bytes the fake build writes for every component."""
+    header = bytearray(64); header[:6] = b'\x7fELF\x02\x01'
+    struct.pack_into('<H', header, 18, 183)
+    return bytes(header)
 
 
 class RuntimeUpdateTest(unittest.TestCase):
@@ -25,11 +33,16 @@ class RuntimeUpdateTest(unittest.TestCase):
         self.manifest = self.pack / 'nx2a-data.json'
         self.manifest.write_text(json.dumps({'title_id': self.title, 'name': 'Game',
             'host': 'host/libdmplay.so', 'host_front': 2, 'player_api_revision': 0}))
-        for name in ('host/libdmplay.so', 'mods/main', 'shaders/a', 'romfs/file', 'dlc/a',
+        for name in ('mods/main', 'shaders/a', 'romfs/file', 'dlc/a',
                      'saves/slot', 'settings.txt', 'drivers/custom.so'):
             p = self.pack / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b'preserve me')
+        # The runtime the update replaces in place: the host in its own folder, the hooks beside the drivers.
+        for name in runtime_update.RUNTIME_FILES:
+            p = self.pack / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b'old runtime')
         self.dm = self.root / 'tool' / 'nxnative' / 'dm'
         (self.dm / 'android').mkdir(parents=True)
         (self.dm / 'games').mkdir(parents=True)
@@ -39,7 +52,8 @@ out = pathlib.Path(sys.argv[3]); d = pathlib.Path(sys.argv[2])
 out.write_text((d / 'game.tsv').read_text())
 ''')
         self.build = self.dm / 'android' / 'build.py'
-        self.build.write_text('''import os, pathlib, sys, struct
+        component = built_component()
+        self.build.write_text(f'''import os, pathlib, sys
 args = sys.argv
 assert '--play' in args and '--release' in args
 assert os.environ['DM_GAMES_FIRST'] == '1'
@@ -48,12 +62,13 @@ assert (profile / 'game.tsv').read_text() == 'effective game profile with adjust
 assert (profile / 'android.tsv').read_text() == 'effective android profile'
 assert not list(profile.glob('*.h'))
 out = pathlib.Path(args[args.index('--out')+1]); out.mkdir()
-header = bytearray(64); header[:6] = b'\\x7fELF\\x02\\x01'; struct.pack_into('<H', header, 18, 183)
-(out / 'libdmplay.so').write_bytes(header)
+(out / 'libdmplay.so').write_bytes({component!r})
 for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so'):
-    (out / name).write_bytes(header)
+    (out / name).write_bytes({component!r})
 ''')
-        self.before = {str(p.relative_to(self.pack)): p.read_bytes() for p in self.pack.rglob('*') if p.is_file()}
+        self.before = {str(p.relative_to(self.pack)): p.read_bytes()
+                       for p in self.pack.rglob('*') if p.is_file()
+                       and str(p.relative_to(self.pack)) not in runtime_update.RUNTIME_FILES}
         self.addCleanup(patch.stopall)
         patch.object(runtime_update, 'DM', self.dm).start()
         patch.object(runtime_update.config, 'load', return_value={}).start()
@@ -69,9 +84,9 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
         (d / 'android.tsv').write_text('effective android profile')
         return hashlib.sha256(text.encode()).hexdigest()
 
-    def record(self, fingerprint):
+    def record(self, fingerprint, host='host/libdmplay.so'):
         self.manifest.write_text(json.dumps({'title_id': self.title, 'name': 'Game',
-            'host': 'host/libdmplay.so', 'host_front': 2, 'player_api_revision': 0, 'profile_h': fingerprint}))
+            'host': host, 'host_front': 2, 'player_api_revision': 0, 'profile_h': fingerprint}))
         self.before['nx2a-data.json'] = self.manifest.read_bytes()   # the manifest the test wrote is the baseline
 
     def rebuild(self, allow_drift=False):
@@ -82,6 +97,18 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
             if manifest or name != 'nx2a-data.json':
                 self.assertEqual((self.pack / name).read_bytes(), data, name)
 
+    def assert_runtime_installed(self):
+        """The pack's own places hold the runtime the build made."""
+        self.assertEqual((self.pack / 'host/libdmplay.so').read_bytes(), built_component())
+        for name in runtime_update.HOOKS:
+            self.assertEqual((self.pack / 'drivers' / name).read_bytes(), built_component())
+
+    def assert_old_runtime_in_place(self):
+        """The pack still runs the runtime it ran before."""
+        self.assertEqual((self.pack / 'host/libdmplay.so').read_bytes(), b'old runtime')
+        for name in runtime_update.HOOKS:
+            self.assertEqual((self.pack / 'drivers' / name).read_bytes(), b'old runtime')
+
     def test_update_without_source_keys_or_old_work(self):
         self.assertFalse((self.root / 'work').exists())
         fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
@@ -91,9 +118,9 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
         updated = json.loads(self.manifest.read_text())
         self.assertEqual(updated['player_api_revision'], PLAYER_API_REVISION)
         self.assertNotIn('host_front', updated)
-        host = self.pack / updated['host']
-        self.assertTrue(host.parent.name.startswith('.runtime-'))
-        self.assertTrue(all((host.parent / name).is_file() for name in runtime_update.HOOKS))
+        self.assertEqual(updated['host'], 'host/libdmplay.so')
+        self.assert_runtime_installed()
+        self.assertEqual(list(self.pack.glob('.runtime-*')), [])   # the staging folder is gone
         self.assert_preserved(manifest=False)
 
     def test_the_workspace_profile_is_the_one_that_made_the_pack(self):
@@ -101,9 +128,13 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
         self.record(fingerprint)
         self.rebuild()
         self.assert_preserved(manifest=False)
+        # 重建成功后这份档案回写进数据包：之后的工作区删除与否都无所谓了
+        embedded = self.pack / 'profile' / self.title
+        self.assertEqual((embedded / 'game.tsv').read_text(), 'effective game profile with adjusted memory')
+        self.assertEqual((embedded / 'android.tsv').read_text(), 'effective android profile')
 
-    def test_the_payload_profile_is_used_when_the_workspace_has_none(self):
-        fingerprint = self.profile(self.dm / 'games')
+    def test_the_packs_own_profile_is_used_when_the_workspace_has_none(self):
+        fingerprint = self.profile(self.pack / 'profile')
         self.record(fingerprint)
         self.rebuild()
         self.assert_preserved(manifest=False)
@@ -167,41 +198,81 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
     def test_failed_compilation_keeps_every_original_byte(self):
         fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
         self.record(fingerprint)
+        dead = self.pack / '.runtime-dead'
+        dead.mkdir()
+        (dead / 'libdmplay.so').write_bytes(b'old runtime')
         self.build.write_text('raise SystemExit(1)')
         with self.assertRaisesRegex(RuntimeError, 'Runtime compilation failed'):
             self.rebuild()
         self.assert_preserved()
-        self.assertEqual(list(self.pack.glob('.runtime-*')), [])
+        self.assert_old_runtime_in_place()
+        self.assertTrue(dead.is_dir())   # the folders are taken away only after a successful commit
 
-    def test_interrupted_activation_and_retry(self):
+    def test_an_interrupted_update_leaves_the_pack_as_it_was(self):
         fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
         self.record(fingerprint)
         with patch.object(runtime_update.os, 'replace', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.rebuild()
         self.assert_preserved()
+        self.assert_old_runtime_in_place()
+        self.assertEqual(list(self.pack.glob('.runtime-*')), [])
+
+    def test_an_interrupted_update_is_taken_over_by_the_next_one(self):
+        fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
+        self.record(fingerprint)
+        with patch.object(runtime_update.os, 'replace', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.rebuild()
         # A hard-killed process may leave an unreferenced stage; it cannot become active by discovery.
         orphan = self.pack / '.runtime-orphan'
         orphan.mkdir()
         (orphan / 'libdmplay.so').write_bytes(b'incomplete')
         self.rebuild()
-        self.assertNotIn('orphan', json.loads(self.manifest.read_text())['host'])
+        self.assertFalse(orphan.exists())
+        self.assert_runtime_installed()
         self.assert_preserved(manifest=False)
 
-    def test_cancellation_immediately_after_commit_keeps_activated_components(self):
+    def test_cancellation_immediately_after_commit_keeps_the_new_runtime(self):
         fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
         self.record(fingerprint)
         replace = os.replace
         def commit_then_cancel(source, destination):
             replace(source, destination)
-            raise KeyboardInterrupt()
+            if os.path.realpath(destination) == os.path.realpath(self.manifest):
+                raise KeyboardInterrupt()
         with patch.object(runtime_update.os, 'replace', side_effect=commit_then_cancel):
             with self.assertRaises(KeyboardInterrupt):
                 self.rebuild()
         manifest = json.loads(self.manifest.read_text())
-        host = self.pack / manifest['host']
-        self.assertTrue(host.is_file())
-        self.assertTrue(all((host.parent / name).is_file() for name in runtime_update.HOOKS))
+        self.assertEqual(manifest['host'], 'host/libdmplay.so')
+        self.assert_runtime_installed()
+        self.assertEqual(list(self.pack.glob('.runtime-*')), [])
+
+    def test_a_pack_from_the_old_model_is_migrated_to_the_pack_layout(self):
+        # an old pack: the manifest points into a generation folder and the runtime lives there
+        old = self.pack / '.runtime-old'
+        old.mkdir()
+        for name in runtime_update.RUNTIME_FILES:
+            (old / Path(name).name).write_bytes(b'old runtime')
+        fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
+        self.record(fingerprint, host='.runtime-old/libdmplay.so')
+        self.rebuild()
+        updated = json.loads(self.manifest.read_text())
+        self.assertEqual(updated['host'], 'host/libdmplay.so')
+        self.assert_runtime_installed()
+        self.assertFalse(old.exists())   # the generation folder is dead now
+        self.assertEqual(list(self.pack.glob('.runtime-*')), [])
+        self.assert_preserved(manifest=False)
+
+    def test_a_pack_without_a_host_gets_one(self):
+        # a pack that carries no host yet: the update makes one
+        (self.pack / 'host/libdmplay.so').unlink()
+        (self.pack / 'host').rmdir()
+        fingerprint = self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived')
+        self.record(fingerprint)
+        self.rebuild()
+        self.assert_runtime_installed()
         self.assert_preserved(manifest=False)
 
     def test_payload_revision_mismatch_fails_before_compilation(self):

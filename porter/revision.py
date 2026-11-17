@@ -12,3 +12,10 @@ the app calls them, so a pack's runtime has to be rebuilt for the center to exis
 pack's runtime has to be rebuilt for the mode to reach the host.
 """
 PLAYER_API_REVISION = 6
+
+# The game profiles the player imports (a package of nxnative/dm/games/<title ID>/ folders) into their own folder: what the package was cut from.
+# PROFILES_REVISION counts the syncs of upstream's profiles (1: the first sync, seedds/nxnative at PROFILES_COMMIT); PROFILES_COMMIT is the upstream commit the
+# profiles come from. The revision is a label, not a rule: the player imports a package once and keeps it, an app update does not touch it.
+PROFILES_REVISION = 1
+PROFILES_COMMIT = 'bf1e4edd48b448bbe3f8fadab6a14ff1819ac742'
+PROFILES_REPO = 'https://github.com/seedds/nxnative'

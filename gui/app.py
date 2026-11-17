@@ -19,7 +19,7 @@ from gui.runner import Porter, call_json
 
 LANGUAGES = [('', 'English (default)'), ('ja', 'Japanese'), ('fr', 'French'), ('de', 'German'), ('it', 'Italian'), ('es', 'Spanish'), ('nl', 'Dutch'), ('pt', 'Portuguese'),
              ('ru', 'Russian'), ('ko', 'Korean'), ('zh-Hans', 'Chinese (Simplified)'), ('zh-Hant', 'Chinese (Traditional)')]
-STATUS_COLOUR = {'playable': '#2e7d32', 'wip': '#ef6c00', 'boots': '#ef6c00', 'experimental': '#ef6c00', 'ios only': '#757575'}
+STATUS_COLOUR = {'playable': '#2e7d32', 'wip': '#ef6c00', 'boots': '#ef6c00', 'experimental': '#ef6c00', 'not ported': '#757575'}
 
 
 def hms(s):
@@ -177,7 +177,7 @@ class PortTab(QWidget):
             message = (err or {}).get('error') or 'No game found (an NSP, XCI, NSZ or XCZ with a title ID).'
             self.card.setText('<span style="color:#c62828">' + html.escape(message).replace('\n', '<br>') + '</span>'); return
         a = info.get('android') or {}
-        st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
+        st = a.get('status', 'not ported' if info.get('profile') else 'not supported')
         col = STATUS_COLOUR.get(st, '#c62828')
         rows = [(f'<b>{info["name"]}</b> &nbsp; <span style="color:#757575">{info["title_id"]}</span>' if info.get('name') else f'<b>{info["title_id"]}</b>') + ' &nbsp; '
                 f'<span style="background:{col};color:white;padding:1px 6px">&nbsp;{st}&nbsp;</span>']

@@ -173,11 +173,31 @@ object LogBundle {
                 val cmd = File(d, "cmdline").readText().replace('\u0000', ' ').trim()
                 if (!cmd.contains("nx.android") && !cmd.contains("python3.13") && !cmd.contains("dmhost") && !cmd.contains("shader_split")) continue
                 val rss = File(d, "status").readLines().firstOrNull { it.startsWith("VmRSS:") }?.trim() ?: ""
-                row("pid ${d.name}", "$rss  $cmd")
+                row("pid ${d.name}", "$rss  ${cpuText(d)}\n$cmd")
             } catch (e: Exception) {
             }
         }
         return b.toString()
+    }
+
+    /**
+     * How much CPU a process has used and how old it is: the two numbers that tell a working process from a
+     * stuck one (the CPU time grows, the age says how long it has been at it). The kernel's own counters, in
+     * clock ticks (a hundredth of a second each); the age comes from the clock, since /proc/uptime is not
+     * readable by an app on every phone.
+     */
+    private fun cpuText(dir: File): String {
+        return try {
+            val stat = File(dir, "stat").readText()
+            val after = stat.substringAfterLast(')')          // the name in parentheses may hold spaces
+            val f = after.trim().split(Regex("\\s+"))
+            val ticks = f[11].toLong() + f[12].toLong()      // utime, stime
+            val started = f[19].toLong()                     // when it started, in ticks
+            val age = android.os.SystemClock.elapsedRealtime() / 1000.0 - started / 100.0
+            "cpu ${"%.1f".format(ticks / 100.0)} s, ${"%.0f".format(age)} s old"
+        } catch (e: Exception) {
+            ""
+        }
     }
 
     /**

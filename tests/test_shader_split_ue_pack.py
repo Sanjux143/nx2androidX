@@ -85,15 +85,14 @@ class ModernPak(unittest.TestCase):
         rel, uniq, pairs, extra = self.scan('pakchunk0-Switch.pak', pak(4, 1 << 20), count)
         self.assertGreater(count[0], (1 << 19))   # the whole file: its shaders are inline in the cooked packages
 
-    def test_a_file_that_does_not_fit_is_refused(self):
+    def test_a_file_that_does_not_fit_is_mapped_not_refused(self):
+        """A file too big for this device's memory is mapped, not refused (its pages come from the file cache): the
+        13 Sentinels' 4.2 GB asset archive stopped a phone's port before this"""
         p = self.tmp / 'big.bin'
-        with open(p, 'wb') as f: f.truncate(600 << 20)   # a sparse file: 600 MB, no disk
-        with mock.patch.object(self.m, 'meminfo', return_value=(4096, 600)):
-            with self.assertRaises(SystemExit) as e:
-                self.m.scan_file((str(p), 'big.bin'))
-        self.assertIn('[RED]', str(e.exception))
-        self.assertIn('big.bin', str(e.exception))
-        self.assertIn('600', str(e.exception))   # the size it reports
+        with open(p, 'wb') as f: f.truncate(20 << 20)   # 20 MB
+        with mock.patch.object(self.m, 'meminfo', return_value=(4096, 10)), mock.patch.object(self.m, 'BUDGET_MB', 1):
+            rel, uniq, pairs, extra = self.m.scan_file((str(p), 'big.bin'))
+        self.assertEqual((uniq, pairs, extra), ({}, set(), {}))   # mapped and scanned: no shaders in it
 
     def test_a_file_that_fits_is_read(self):
         p = self.tmp / 'small.bin'

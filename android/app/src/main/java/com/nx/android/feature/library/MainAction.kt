@@ -17,19 +17,20 @@ internal enum class MainAction { RUN, BUILD, VIEW_BUILD }
  * 这个游戏的主动作是什么。
  *
  * @param status 游戏现在的状态（跑着的那个游戏在状态里也算 PORTING）
- * @param stale 旧版宿主编的包：主按钮变成「更新运行库」，走重新移植那条路
+ *
+ * 没有第四种「更新运行库」：运行库过期/缺失的包一样点「构建」（门放行后游戏页的 Loading 自己重建），
+ * 完成的包永远只有一个「运行」。
  */
-internal fun mainActionOf(status: GameStatus, stale: Boolean): MainAction = when {
+internal fun mainActionOf(status: GameStatus): MainAction = when {
     status == GameStatus.PORTING -> MainAction.VIEW_BUILD
-    status == GameStatus.DONE && !stale -> MainAction.RUN
+    status == GameStatus.DONE -> MainAction.RUN
     else -> MainAction.BUILD
 }
 
 /** 主动作的文案：与左下角主按钮上写的完全一样。 */
 @Composable
-internal fun mainActionLabel(action: MainAction, stale: Boolean): String = when {
-    action == MainAction.VIEW_BUILD -> stringResource(R.string.lib_view_builds)
-    stale -> stringResource(R.string.runtime_update)
-    action == MainAction.RUN -> stringResource(R.string.set_run_onboarding)
-    else -> stringResource(R.string.common_build)
+internal fun mainActionLabel(action: MainAction): String = when (action) {
+    MainAction.VIEW_BUILD -> stringResource(R.string.lib_view_builds)
+    MainAction.RUN -> stringResource(R.string.set_run_onboarding)
+    MainAction.BUILD -> stringResource(R.string.common_build)
 }

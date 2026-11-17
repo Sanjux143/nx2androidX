@@ -47,11 +47,14 @@
             android:name="com.android.app.gamemode.performance.enabled"
             android:value="true" />
 
-        <!-- The shell: the library, the builds and the settings — and the root of the app's task. standard on
-             purpose: the game page sits on top of it in the same task, and a singleTask shell would finish
-             that game page whenever the launcher icon brought the task forward. -->
+        <!-- The shell: the library, the builds and the settings — and the root of the app's own task.
+             singleTop, not standard: a home-screen shortcut's intent lands in onNewIntent when the library
+             is at the front, instead of stacking a second library page. (singleTask would finish the game
+             page above it whenever the launcher icon brought the task forward — that mode belongs to the
+             game page, which is a page of this same task.) -->
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:screenOrientation="sensorLandscape"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|layoutDirection|colorMode|fontWeightAdjustment|fontScale"
             android:exported="true"
@@ -69,20 +72,15 @@
             android:name=".PortService"
             android:exported="false" />
 
-        <service android:name=".RuntimeUpdateService" android:exported="false" />
-
         <!-- The player: one game at a time, in a process of its own — a crash (or the game's own exit, which
              ends the process) takes the game down, not the app or a port that is running.
-             The game page is a page of the app's own task: it sits on top of the library page, so the launcher
-             icon never lands on it and "exit the game" falls back to the library page underneath. singleTop,
-             not singleTask: singleTask is always the root of its task, which would finish the library page
-             below it. The app's "resume the game" and "exit the game" land here through onNewIntent; every
-             config change is handled here (a recreation takes the running game's window over, it does not
-             restart it). -->
+             游戏是独立进程 + 全系统单实例（singleTask、与库页同一个任务）：退出或崩溃后露出底下的库页，
+             最近任务里仍是单卡。所有启动 intent 都路由到这一个实例（onNewIntent）；配置变化都在本页处理
+             （重建的页面接管在跑的游戏的窗口，不重启游戏）。 -->
         <activity
             android:name=".game.GameActivity"
             android:process=":play"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|layoutDirection|colorMode|fontWeightAdjustment|fontScale"
             android:exported="false"

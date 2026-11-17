@@ -16,6 +16,12 @@ import java.io.File
  */
 class PadPlayers(private val ctx: android.content.Context, private val titleId: String) {
 
+    companion object {
+        /** 手柄中心的指派是全局一份（不按游戏分）；游戏抽屉的「谁玩谁」读写同一份 */
+        const val GLOBAL = "global"
+    }
+
+
     private val store = PadPlayersStore(
         File(File(ctx.filesDir, PadPlayersStore.DIR), "${titleId.lowercase()}.json"),
     )

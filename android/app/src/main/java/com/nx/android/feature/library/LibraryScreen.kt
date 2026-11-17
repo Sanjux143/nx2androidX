@@ -1,6 +1,8 @@
 package com.nx.android.feature.library
 
-import androidx.compose.foundation.background
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,9 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,7 +29,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nx.android.R
 import com.nx.android.app.AppActions
 import com.nx.android.appstate.LibraryState
-import com.nx.android.appstate.PlayerState
 import com.nx.android.appstate.PortState
 import com.nx.android.core.ui.LocalAppLocale
 import com.nx.android.core.ui.PreviewSurface
@@ -38,14 +36,14 @@ import com.nx.android.core.ui.nav.NavHint
 import com.nx.android.core.ui.nav.NavHintBar
 import com.nx.android.core.ui.nav.NavKey
 import com.nx.android.core.ui.nav.OnNavKey
-import com.nx.android.input.GamepadScan
-import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.data.library.GameProfile
+import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameStatus
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.feature.filepicker.PickerMode
 import com.nx.android.feature.filepicker.PickerRequest
+import com.nx.android.input.GamepadScan
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -57,7 +55,7 @@ import java.io.File
  * 所以预览可以单独看它。
  */
 @Composable
-fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actions: AppActions,
+fun LibraryScreen(lib: LibraryState, port: PortState, actions: AppActions,
                   onGoBuilds: () -> Unit, onRequest: (PickerRequest) -> Unit, uiState: LibraryUiState? = null,
                   viewModel: LibraryViewModel? = null, navActive: Boolean = false) {
 
@@ -131,23 +129,17 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
         viewModel?.selectHero(next, visible.size) ?: lib.selectHero(next, visible.size)
     }
 
-    /** 这个游戏的状态 / 它是不是旧版宿主编的包 / 别的游戏在玩时它能不能跑 */
+    /** 这个游戏的状态 */
     fun statusOf(e: GameEntry): GameStatus = lib.statusOf(e)
-    fun staleOf(e: GameEntry): Boolean = e.pack?.needsRuntimeUpdate == true
-    fun lockedOf(e: GameEntry): Boolean {
-        val ported = e.pack
-        return statusOf(e) == GameStatus.DONE && player.running && player.titleId != (ported?.titleId ?: "")
-    }
 
     /**
      * 主动作：把选中的游戏跑起来 / 去构建 / 看构建的进度。
      *
-     * 与左下角那个主按钮同一条路（`mainActionOf`）：别的游戏在玩时主按钮是置灰的，这里也不做事。
+     * 与左下角那个主按钮同一条路（`mainActionOf`）。占用不在这里拦：点了会被门拒绝并说明。
      */
     fun runMainAction() {
         val entry = visible.getOrNull(heroIndex) ?: return
-        if (lockedOf(entry)) return
-        when (mainActionOf(statusOf(entry), staleOf(entry))) {
+        when (mainActionOf(statusOf(entry))) {
             MainAction.VIEW_BUILD -> libraryActions.onViewBuild(entry)
             MainAction.RUN -> libraryActions.onRun(entry)
             MainAction.BUILD -> libraryActions.onBuild(entry)
@@ -174,12 +166,8 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
         entries = visible,
         heroIndex = heroIndex,
         statusOf = { statusOf(it) },
-        staleOf = { staleOf(it) },
         profileOf = { lib.profileOf(it) },
         portProgress = port.progress,
-        // 单游戏：别的游戏在玩时，那个游戏的「▶ 运行」置灰并说明
-        lockedOf = { lockedOf(it) },
-        runningGameName = player.name,
         actions = libraryActions,
         navActive = navActive,
         padConnected = padConnected,
@@ -189,12 +177,12 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
 }
 
 @Composable
-fun LibraryRoute(viewModel: LibraryViewModel, port: PortState, player: PlayerState,
+fun LibraryRoute(viewModel: LibraryViewModel, port: PortState,
                  actions: AppActions,
                  onGoBuilds: () -> Unit, onRequest: (PickerRequest) -> Unit,
                  navActive: Boolean = false) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    LibraryScreen(viewModel.library, port, player, actions, onGoBuilds, onRequest, uiState, viewModel,
+    LibraryScreen(viewModel.library, port, actions, onGoBuilds, onRequest, uiState, viewModel,
         navActive = navActive)
 }
 
@@ -218,21 +206,15 @@ internal fun LibraryContent(
     entries: List<GameEntry>,
     heroIndex: Int,
     statusOf: (GameEntry) -> GameStatus,
-    staleOf: (GameEntry) -> Boolean = { false },
     profileOf: (String) -> GameProfile? = { null },
     portProgress: Float,
-    lockedOf: (GameEntry) -> Boolean,
-    runningGameName: String,
     actions: LibraryActions,
     navActive: Boolean = false,
     padConnected: Boolean = false,
 ) {
     val sel = entries.getOrNull(heroIndex)
     // 提示条上确认键那一项写的文案：与左下角主按钮完全一样（同一个 mainActionOf）
-    val mainLabel = sel?.let { e ->
-        val stale = staleOf(e)
-        mainActionLabel(mainActionOf(statusOf(e), stale), stale)
-    }
+    val mainLabel = sel?.let { e -> mainActionLabel(mainActionOf(statusOf(e))) }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
@@ -272,9 +254,6 @@ internal fun LibraryContent(
                 entry = entry,
                 profile = profileOf(entry.titleId),
                 status = statusOf(entry),
-                stale = staleOf(entry),
-                locked = lockedOf(entry),
-                runningGameName = runningGameName,
                 portProgress = portProgress,
                 onBuild = { actions.onBuild(entry) },
                 onRun = { actions.onRun(entry) },
@@ -313,8 +292,6 @@ private fun LibraryContentPreview() {
             heroIndex = 1,
             statusOf = previewStatus,
             portProgress = 0.42f,
-            lockedOf = { false },
-            runningGameName = "",
             actions = previewActions(),
         )
     }
@@ -330,8 +307,6 @@ private fun LibraryEmptyPreview() {
             heroIndex = 0,
             statusOf = previewStatus,
             portProgress = 0f,
-            lockedOf = { false },
-            runningGameName = "",
             actions = previewActions(),
         )
     }

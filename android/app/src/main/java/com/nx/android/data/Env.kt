@@ -81,6 +81,9 @@ class Env @Inject constructor(@ApplicationContext private val ctx: Context, priv
             // the build folder: Android does not let the app run a program on the shared storage, so the
             // port's own tools and the unpacked game live in the app's own folder
             "NX2A_WORK" to work.absolutePath,
+            // the runtimes folder: the runtime a port builds goes here (one folder per title ID, with its
+            // build marker), not into the pack — the launch loads it in place, no per-launch copy
+            "NX2A_RUNTIMES" to paths.runtimes.absolutePath,
             "NX2A_PLAYER_API_REVISION" to com.nx.android.domain.PlayerApiRevision.CURRENT.toString(),
             "PYTHONUNBUFFERED" to "1",
             "PYTHONIOENCODING" to "utf-8",

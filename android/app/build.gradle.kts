@@ -73,8 +73,8 @@ android {
         targetSdk = 28
         // The version the release's tag carries, without the "v": v0.3.0-alpha02 -> 0.3.0-alpha02. The update
         // check compares the two, so the app can tell which release is newer than the one running.
-        versionCode = 13
-        versionName = "0.3.0-alpha13"
+        versionCode = 15
+        versionName = "0.3.0-alpha15"
         ndk { abiFilters += listOf("arm64-v8a") }
         // -PnxLsfg=false: the host the app builds is built without the frame generation (the lsfg/ folder): the host
         // is then smaller and the frame generation reports that it is not in this build. The default is the current
@@ -173,13 +173,21 @@ android {
 // moving a call or adding a new one requires an explicit architecture decision.
 val legacyFeatureDataImports = setOf(
     "feature/builds/BuildsScreen.kt|com.nx.android.data.AppLog",
+    "feature/builds/BuildsViewModel.kt|com.nx.android.data.PrefsStore",
+    "feature/builds/BuildsViewModel.kt|com.nx.android.data.porting.BuildSessionRepository",
     "feature/environment/EnvChecklistDialog.kt|com.nx.android.data.PhantomFix",
     "feature/environment/PhantomFixDialog.kt|com.nx.android.data.PhantomFix",
     "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.GameIcon",
     "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.GameLog",
-    "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.Player",
+    "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.LogBundle",
     "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.SaveShare",
     "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.StorageVolumes",
+    "feature/gamedetail/GameDetailScreen.kt|com.nx.android.data.saves.SaveIo",
+    "feature/gamedetail/GameDetailViewModel.kt|com.nx.android.data.saves.SaveIo",
+    "feature/library/LibraryHeroDetails.kt|com.nx.android.data.library.GameProfile",
+    "feature/library/LibraryScreen.kt|com.nx.android.data.library.GameProfile",
+    "feature/library/LibraryStatus.kt|com.nx.android.data.library.GameProfile",
+    "feature/faq/FaqContent.kt|com.nx.android.data.AppLocale",
     "feature/settings/SettingsScreen.kt|com.nx.android.data.AppLocale",
     "feature/settings/SettingsScreen.kt|com.nx.android.data.LosslessDll",
 )
@@ -207,6 +215,18 @@ val checkArchitectureBoundaries by tasks.registering {
         val unapprovedFeatureImports = featureDataImports - legacyFeatureDataImports
         val staleAllowlistEntries = legacyFeatureDataImports - featureDataImports
 
+        // The ":play" process's liveness is the ledger's own fact (appstate/PlayerState.kt): the launch
+        // gate, the busy checks and the crash detection all ask the ledger, and no other file scans the
+        // process itself. data/Player.kt holds the scan; appstate/PlayerState.kt is the one consumer.
+        val processAliveAllowed = setOf("data/Player.kt", "appstate/PlayerState.kt")
+        val processAliveViolations = sourceRoot.walkTopDown().filter { it.isFile && it.extension == "kt" }
+            .filterNot { it.relativeTo(sourceRoot).path in processAliveAllowed }
+            .flatMap { source ->
+                source.readLines().mapIndexedNotNull { index, line ->
+                    if ("playProcessAlive" in line) "${source.relativeTo(sourceRoot)}:${index + 1}: $line" else null
+                }
+            }.toList()
+
         check(domainViolations.isEmpty()) {
             "Domain imports must stay platform/UI/data independent:\n${domainViolations.joinToString("\n")}"
         }
@@ -215,6 +235,9 @@ val checkArchitectureBoundaries by tasks.registering {
         }
         check(staleAllowlistEntries.isEmpty()) {
             "Remove migrated imports from legacyFeatureDataImports:\n${staleAllowlistEntries.sorted().joinToString("\n")}"
+        }
+        check(processAliveViolations.isEmpty()) {
+            "Only the ledger (appstate/PlayerState.kt) may ask whether the :play process is alive:\n${processAliveViolations.joinToString("\n")}"
         }
     }
 }
